@@ -25,13 +25,11 @@ class ApiException implements Exception {
 /// 而是把会话状态切回未登录并跳登录页。和 funread-web 的
 /// `UnauthorizedError` 是同一个约定。
 class UnauthorizedException extends ApiException {
-  const UnauthorizedException([String message = '需要登录'])
-      : super(message, statusCode: 401);
+  const UnauthorizedException([super.message = '需要登录']) : super(statusCode: 401);
 }
 
 /// 后端回了 403：身份有效，但权限不够（比如非 admin 访问管理端）。
 /// 和 401 分开，是因为跳登录页对它没有任何帮助。
 class ForbiddenException extends ApiException {
-  const ForbiddenException([String message = '没有权限'])
-      : super(message, statusCode: 403);
+  const ForbiddenException([super.message = '没有权限']) : super(statusCode: 403);
 }

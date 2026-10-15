@@ -22,10 +22,14 @@ class ApiClient {
       ..receiveTimeout = const Duration(seconds: 30)
       ..sendTimeout = const Duration(seconds: 30)
       ..headers = <String, dynamic>{'Accept': 'application/json'}
+      ..responseType = ResponseType.json
       // 自己判状态码，别让 dio 在 4xx/5xx 上抛掉 body —— FastAPI 的
       // `detail` 就在 body 里，那才是唯一能给用户看的东西。
-      ..validateStatus = (int? status) => status != null && status < 500
-      ..responseType = ResponseType.json;
+      //
+      // 外面那层括号是必须的：箭头函数的函数体会把后面的 `..` 一起吃进去，
+      // 于是 `..responseType` 被当成 `bool` 上的 cascade，报一个和真实原因
+      // 完全无关的「bool 没有 responseType 这个 setter」。
+      ..validateStatus = ((int? status) => status != null && status < 500);
   }
 
   final Dio _dio;
@@ -155,6 +159,8 @@ class ApiClient {
         );
       case DioExceptionType.sendTimeout:
       case DioExceptionType.receiveTimeout:
+      // 响应体解析超时（dio 5.11 新增）。对用户来说和接收超时是一回事。
+      case DioExceptionType.transformTimeout:
         return const ApiException(
           '服务器没有在预期时间内响应。聚合搜索本来就慢，但这一次超过了上限。',
           isNetwork: true,
