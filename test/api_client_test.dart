@@ -1,38 +1,55 @@
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:funread_client/src/api/funread_api.dart';
+import 'package:funread_client/src/config/app_config.dart';
 import 'package:funread_client/src/models/models.dart';
 
 import 'support/fake_adapter.dart';
 
-void main() {
-  // cookie jar 会去问 path_provider，而测试里没有插件实现。
-  // ApiClient 把失败吞成内存 jar，这里只是让消息通道有个 binding 可用。
-  TestWidgetsFlutterBinding.ensureInitialized();
+/// 凭证层的空实现。
+///
+/// 真实的那个在原生端会去问 path_provider 要目录，而平台通道在测试里要么
+/// 抛 MissingPluginException、要么根本回不来。这里要测的是 URL 拼接和错误
+/// 翻译，和 cookie 存哪儿无关。
+Future<void> noCredentials(Dio dio) async {}
 
+void main() {
   ({FunreadApi api, FakeAdapter adapter}) build(
     FakeResponse Function(RequestOptions options) respond,
   ) {
     final FakeAdapter adapter = FakeAdapter(respond);
     final Dio dio = Dio()..httpClientAdapter = adapter;
     return (
-      api: FunreadApi(baseUrl: 'http://nas.test:18811', dio: dio),
+      api: FunreadApi(
+        baseUrl: 'http://nas.test:18811',
+        dio: dio,
+        installCredentials: noCredentials,
+      ),
       adapter: adapter,
     );
   }
 
+  ApiClient client(String baseUrl) =>
+      ApiClient(baseUrl: baseUrl, installCredentials: noCredentials);
+
   group('基址归一化', () {
     test('收掉尾斜杠、误粘的 /api/v1，并补上默认 scheme', () {
-      expect(ApiClient(baseUrl: 'http://nas.test:18811/').baseUrl,
-          'http://nas.test:18811');
-      expect(ApiClient(baseUrl: 'http://nas.test:18811/api/v1').baseUrl,
-          'http://nas.test:18811');
-      expect(ApiClient(baseUrl: 'http://nas.test:18811/api/v1/').baseUrl,
+      expect(client('http://nas.test:18811/').baseUrl, 'http://nas.test:18811');
+      expect(
+          client('http://nas.test:18811/api/v1').baseUrl, 'http://nas.test:18811');
+      expect(client('http://nas.test:18811/api/v1/').baseUrl,
           'http://nas.test:18811');
       // 用户只写主机端口是最常见的输入，不补 scheme 会直接连不上。
-      expect(ApiClient(baseUrl: 'nas.test:18811').baseUrl, 'http://nas.test:18811');
-      // 空串 = web 上的同源，必须原样保留。
-      expect(ApiClient(baseUrl: '').baseUrl, '');
+      expect(client('nas.test:18811').baseUrl, 'http://nas.test:18811');
+    });
+
+    test('原生端上的空地址兜回默认值，而不是炸在 dio 的 baseUrl 校验里', () {
+      // 空串只在 web 上有意义（同源）。dio 在非 web 平台上直接拒收相对
+      // baseUrl，所以这条路必须自己兜住 —— 测试就跑在非 web 平台上。
+      expect(client('').baseUrl, AppConfig.nativeDefaultApiBase);
+      expect(client('   ').baseUrl, AppConfig.nativeDefaultApiBase);
+      // 只粘了前缀进来，削完也是空的。
+      expect(client('/api/v1').baseUrl, AppConfig.nativeDefaultApiBase);
     });
   });
 

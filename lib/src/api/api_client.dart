@@ -1,16 +1,26 @@
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 
 import '../config/app_config.dart';
 import 'api_exception.dart';
 import 'cookie_store.dart';
+
+/// 往 [Dio] 上装会话凭证的那一步。
+///
+/// 抽成函数类型有两个理由：后端的设备 token 落地之后，换掉的就是这一个值
+/// （不用动 [ApiClient] 的其它部分）；以及 widget 测试要能把它换成空实现 ——
+/// 默认实现在原生端会去问 path_provider，而平台通道的往返在
+/// `flutter_test` 的 fake async 里永远回不来，整个应用会卡在启动闸门上。
+typedef CredentialInstaller = Future<void> Function(Dio dio);
 
 /// 所有 HTTP 细节收口在这里：基址拼接、凭证、超时、错误翻译。
 ///
 /// 上面的 `AuthApi` / `ShelfApi` / `ReaderApi` 只负责「哪个路径、什么形状」，
 /// 不碰 dio。这样换 HTTP 库、加 Bearer token、加重试，都只动这一个文件。
 class ApiClient {
-  ApiClient({String? baseUrl, Dio? dio})
+  ApiClient({String? baseUrl, Dio? dio, CredentialInstaller? installCredentials})
       : _dio = dio ?? Dio(),
+        _installCredentials = installCredentials ?? attachCookieStore,
         _baseUrl = _normalize(baseUrl ?? AppConfig.defaultApiBase) {
     _dio.options
       ..baseUrl = _endpoint(_baseUrl)
@@ -33,6 +43,7 @@ class ApiClient {
   }
 
   final Dio _dio;
+  final CredentialInstaller _installCredentials;
   String _baseUrl;
 
   /// 当前后端地址（不含 `/api/v1`）。空串 = 同源（只在 web 上有意义）。
@@ -40,7 +51,7 @@ class ApiClient {
 
   /// 凭证层只装一次。放成 late final 的 Future 而不是在构造函数里 fire-and-forget，
   /// 是为了让第一个请求**等它装完**：cookie 拦截器装晚了，首个请求就是匿名的。
-  late final Future<void> _ready = attachCookieStore(_dio);
+  late final Future<void> _ready = _installCredentials(_dio);
 
   /// 切后端。地址是用户可改的（自托管没有「官方服务器」），
   /// 改完之后原来的会话多半不再适用，所以调用方要跟着重新探一次 `/auth/me`。
@@ -51,7 +62,11 @@ class ApiClient {
 
   static String _normalize(String value) {
     final String trimmed = value.trim();
-    if (trimmed.isEmpty) return '';
+    // 空串在 web 上是「同源」，basePath 会变成相对的 `/api/v1`。
+    // 原生端没有这个概念，而且 dio 在非 web 平台上会直接拒收相对 baseUrl
+    // （"Must be a valid URL on platforms other than Web"），所以兜回默认地址
+    // —— 否则「把地址清空」会炸在构造函数里，而不是给出一个能用的默认值。
+    if (trimmed.isEmpty) return kIsWeb ? '' : AppConfig.nativeDefaultApiBase;
     // 用户多半会把尾斜杠带进来，也可能把 /api/v1 一起粘进来。都收掉，
     // 否则拼出 `//api/v1/api/v1/...` 这种只有 404 能告诉你的错。
     String cleaned = trimmed;
@@ -61,11 +76,12 @@ class ApiClient {
     if (cleaned.endsWith(AppConfig.apiPrefix)) {
       cleaned = cleaned.substring(0, cleaned.length - AppConfig.apiPrefix.length);
     }
+    // 只粘了 `/api/v1` 进来的话，上面两步会把它削成空串。和一开始就是空串
+    // 同一个处理，不要掉下去拼成 `http:///api/v1`。
+    if (cleaned.isEmpty) return kIsWeb ? '' : AppConfig.nativeDefaultApiBase;
     // 只写了 host:port 的时候补上 scheme，默认 http —— 自托管实例绝大多数
     // 跑在局域网明文 http 上。
-    if (cleaned.isNotEmpty &&
-        !cleaned.startsWith('http://') &&
-        !cleaned.startsWith('https://')) {
+    if (!cleaned.startsWith('http://') && !cleaned.startsWith('https://')) {
       cleaned = 'http://$cleaned';
     }
     return cleaned;

@@ -16,6 +16,9 @@ class AppConfig {
   static const String compileTimeApiBase =
       String.fromEnvironment('FUNREAD_API_BASE');
 
+  /// 原生端没有「同源」这回事时的兜底地址，也是后端的开发端口。
+  static const String nativeDefaultApiBase = 'http://127.0.0.1:18811';
+
   /// 没有任何配置时用哪个地址。
   ///
   /// web 上默认**空串 = 同源**：浏览器里跨源请求要后端专门放行 CORS，
@@ -27,7 +30,7 @@ class AppConfig {
   static String get defaultApiBase {
     if (compileTimeApiBase.isNotEmpty) return compileTimeApiBase;
     if (kIsWeb) return '';
-    return 'http://127.0.0.1:18811';
+    return nativeDefaultApiBase;
   }
 
   /// 聚合搜索的接收超时。

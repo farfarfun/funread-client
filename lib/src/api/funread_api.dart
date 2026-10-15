@@ -19,8 +19,14 @@ export 'shelf_api.dart';
 /// 测试里不需要为它写 mock：传一个挂了假 `HttpClientAdapter` 的 [Dio] 进来，
 /// 走的就是真实的序列化与错误翻译路径，比 mock 一层接口覆盖得多。
 class FunreadApi {
-  FunreadApi({String? baseUrl, Dio? dio})
-      : this.fromClient(ApiClient(baseUrl: baseUrl, dio: dio));
+  FunreadApi({String? baseUrl, Dio? dio, CredentialInstaller? installCredentials})
+      : this.fromClient(
+          ApiClient(
+            baseUrl: baseUrl,
+            dio: dio,
+            installCredentials: installCredentials,
+          ),
+        );
 
   FunreadApi.fromClient(this.client)
       : auth = AuthApi(client),
