@@ -1,0 +1,53 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!--
+      INTERNET 写在 main 而不是只写在 debug/profile（模板的默认做法）：
+      这个 app 的全部内容都来自用户自己的 funread 服务，release 包没有网络
+      就是一块砖。
+    -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+
+    <application
+        android:label="funread"
+        android:name="${applicationName}"
+        android:icon="@mipmap/ic_launcher"
+        android:usesCleartextTraffic="true">
+        <!--
+          usesCleartextTraffic：自托管实例绝大多数跑在局域网明文 http 上
+          （`http://192.168.x.x:18811`），Android 9 起默认禁止明文流量，
+          不开这个开关就是「连不上，且没有任何提示」。
+          代价是同网段可嗅探 —— 和后端那边 `secure=False` 的 cookie 是同一个
+          取舍，也是同一个前提：这东西不该直接暴露在公网上。
+          以后要收紧的话，换成 network_security_config 只对用户配的那个
+          主机放行。
+        -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:taskAffinity=""
+            android:theme="@style/LaunchTheme"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize">
+            <meta-data
+                android:name="io.flutter.embedding.android.NormalTheme"
+                android:resource="@style/NormalTheme"/>
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+
+        <meta-data
+            android:name="flutterEmbedding"
+            android:value="2"/>
+    </application>
+
+    <!-- Flutter 的文本选择菜单要查询能处理 PROCESS_TEXT 的 app。 -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.PROCESS_TEXT"/>
+            <data android:mimeType="text/plain"/>
+        </intent>
+    </queries>
+</manifest>

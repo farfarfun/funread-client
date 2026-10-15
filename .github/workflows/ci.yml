@@ -1,0 +1,83 @@
+name: CI
+
+# 本仓库的开发机上没有 Flutter SDK（也不打算装），CI 是唯一的编译验证手段。
+# 所以这里跑的四件事就是本仓库的验收标准，缺一不可：
+#   analyze —— 静态检查（`flutter analyze` 对 info 级别也返回非零）
+#   test    —— 模型解析 / API 契约 / 登录闸门
+#   web     —— 次要形态，但必须能出包
+#   apk     —— 主要形态
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+# 连续推送时只保留最后一次，别让排队的任务互相挤。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # 固定一个 stable 版本而不是跟着 `channel: stable` 漂：Flutter 的小版本
+  # 会改 lint 的严格程度和 AGP 的兼容区间，不固定的话 CI 会在没人改代码的
+  # 时候自己变红。升级是一次显式的提交。
+  FLUTTER_VERSION: "3.47.7"
+
+jobs:
+  analyze:
+    name: analyze + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - run: flutter --version
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+
+  build-web:
+    name: build web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      # 不带 --base-href：部署路径由部署方决定，构建产物保持根路径默认值。
+      - run: flutter build web --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web
+          path: build/web
+          retention-days: 7
+
+  build-android:
+    name: build apk (debug)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      # debug 而不是 release：仓库里没有发布签名，release 会退回 debug 签名，
+      # 产出一个看着像正式包的东西，比直接出 debug 包更危险。
+      - run: flutter build apk --debug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk-debug
+          path: build/app/outputs/flutter-apk/app-debug.apk
+          retention-days: 7

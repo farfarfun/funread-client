@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <!--
+    base href 由 `flutter build web --base-href` 替换。部署在子路径下
+    （比如反代到 /app/）时必须让它生效，否则所有资源都会去根路径找。
+  -->
+  <base href="$FLUTTER_BASE_HREF">
+
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="description" content="funread —— 自托管的小说与订阅阅读器">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="funread">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+
+  <link rel="icon" type="image/png" href="favicon.png">
+  <link rel="manifest" href="manifest.json">
+
+  <title>funread</title>
+</head>
+<body>
+  <!--
+    flutter_bootstrap.js 由 `flutter build web` 生成（Flutter 3.22+ 的入口形态）。
+    不要换回老的 flutter.js + _flutter.loader.loadEntrypoint 写法：那套在新版本
+    里只是兼容路径，service worker 的版本号注入也不再走它。
+  -->
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+</html>

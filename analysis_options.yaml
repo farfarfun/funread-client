@@ -1,0 +1,20 @@
+include: package:flutter_lints/flutter.yaml
+
+analyzer:
+  exclude:
+    - build/**
+
+  errors:
+    # CI 跑的是 `flutter analyze`，它对任何等级的问题都返回非零，
+    # 所以这里不需要再把 info 批量提权成 error —— 提权只会让本地 IDE 变吵。
+    # 只有这两条值得单独标红，因为它们对应的是真实崩溃 / 静默错序：
+    #
+    # context 跨 await 使用，在页面已经被 pop 之后会抛。
+    use_build_context_synchronously: error
+    # Future 忘了 await，在「登录成功再跳转」这类顺序依赖上是静默错序。
+    unawaited_futures: error
+
+linter:
+  rules:
+    # 异步调用必须显式处理：要么 await，要么 unawaited()。
+    unawaited_futures: true

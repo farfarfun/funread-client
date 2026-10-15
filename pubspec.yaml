@@ -1,0 +1,41 @@
+name: funread_client
+description: "funread 的 Flutter 客户端：自托管小说 / RSS 阅读器的原生与 Web 前端。"
+# 这是应用不是包，不发 pub.dev。
+publish_to: "none"
+version: 0.1.0+1
+
+environment:
+  # 下界由 flutter_lints 6 决定（它要求 ^3.8.0），不是我们自己的语言特性需求。
+  # CI 固定在 Flutter 3.47.7 / Dart 3.13.5 上跑。
+  sdk: ^3.8.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # HTTP 栈。选 dio 而不是 http：我们需要拦截器（统一错误翻译、cookie 注入）、
+  # 可替换的 HttpClientAdapter（测试里直接塞假适配器，不用起本地服务器），
+  # 以及 per-request 的超时控制 —— 聚合搜索可能跑十几秒，
+  # 和「取一章正文」不该共用一个超时值。
+  dio: ^5.11.0
+
+  # 认证的临时方案，见 lib/src/api/cookie_store.dart 顶部的说明。
+  # 后端目前只发 HttpOnly 的 session cookie，原生端没有浏览器帮忙存，
+  # 所以自己挂一个 cookie jar。等后端出设备 token 之后这两个依赖会被摘掉。
+  cookie_jar: ^4.0.9
+  dio_cookie_manager: ^3.5.0
+
+  # cookie jar 落盘的位置。web 上没有实现，所以只在 io 分支里 import。
+  path_provider: ^2.1.6
+
+  # 存后端地址。自托管的东西没有「官方服务器」，地址必须能记住，
+  # 否则每次冷启动都要重新输一遍。
+  shared_preferences: ^2.5.6
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
