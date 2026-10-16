@@ -1,0 +1,83 @@
+name: Scaffold
+
+# 在 CI 上生成那些**必须有 Flutter SDK 才能产出**的东西，再提交回仓库。
+#
+# 这个仓库的开发机上没有 SDK，所以 `pubspec.lock` 和 ios/macos/linux/windows
+# 四个平台工程没法在本地生成 —— 手写一份没人验证过的 pbxproj 比不写更糟。
+# 与其让它们一直缺着，不如让唯一装了 SDK 的地方（CI）生成并提交。
+#
+# 手动触发，不挂在 push 上：它会往 master 写提交，自动跑的话每次 push 都可能
+# 带出一个无人预期的二次提交。
+on:
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: "要补齐的平台（逗号分隔）"
+        default: "ios,macos,linux,windows"
+      update_lock:
+        description: "同时生成并提交 pubspec.lock"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+env:
+  FLUTTER_VERSION: "3.47.7"
+
+jobs:
+  scaffold:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: 补齐平台工程
+        # `flutter create` 在已有项目上是幂等的：只补缺失的平台目录，不动
+        # 已经在版本库里的 android/ 和 web/，也不碰 lib/。
+        run: |
+          flutter create --platforms=${{ inputs.platforms }} \
+            --org com.farfarfun --project-name funread_client .
+
+      - name: 生成锁文件
+        if: ${{ inputs.update_lock }}
+        run: |
+          # 先把忽略规则去掉，否则下面 git add 不进去
+          sed -i '/^pubspec\.lock$/d' .gitignore
+          flutter pub get
+
+      - name: 验证生成的东西真能编译
+        # 不验证就提交等于把「没人验证过的工程文件」换个地方放。linux 能在
+        # ubuntu runner 上真编译，macOS/iOS 需要 macos runner，这里只做
+        # analyze 兜住 Dart 侧，平台工程的真实编译交给 ci.yml 的后续扩展。
+        run: |
+          flutter pub get
+          flutter analyze
+
+      - name: 提交
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "没有变化，跳过提交"
+            exit 0
+          fi
+          git commit -F- <<'MSG'
+          chore: 在 CI 上补齐平台工程与锁文件
+
+          开发机没有 Flutter SDK，这两样只能由唯一装了 SDK 的地方产出：
+
+          - ios/macos/linux/windows 四个平台工程由 `flutter create` 生成，
+            版本与模板跟随 CI 固定的 Flutter 版本，不是手写的。
+          - pubspec.lock 由 `flutter pub get` 解析得到。在它进来之前，CI 每次
+            都重新解析依赖，上游发个新版就可能在没人改代码时让 CI 变红。
+
+          由 .github/workflows/scaffold.yml 自动提交。
+          MSG
+          git push
