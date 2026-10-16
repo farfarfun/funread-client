@@ -1,4 +1,3 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -43,9 +42,14 @@ void main() {
 
   // settings 不在这里 dispose：它挂在 AppServices 上，由 services.dispose()
   // 负责。两边都调会在第二次 dispose 上断言失败。
-  tearDown(() => debugDefaultTargetPlatformOverride = null);
 
-  Widget wrap(FakeBackend backend) {
+  /// 平台走 `ThemeData.platform` 而不是 `debugDefaultTargetPlatformOverride`：
+  /// 那个全局开关必须在**测试体结束前**改回去（框架在收尾时断言它没被动过），
+  /// 而 tearDown 跑得太晚。界面读的也正是 `Theme.of(context).platform`。
+  Widget wrap(
+    FakeBackend backend, {
+    TargetPlatform platform = TargetPlatform.android,
+  }) {
     final AppServices services = AppServices(
       api: backend.api,
       auth: AuthController(api: backend.api),
@@ -54,13 +58,19 @@ void main() {
     addTearDown(services.dispose);
     return AppScope(
       services: services,
-      child: const MaterialApp(home: BookDetailScreen(ref: ref)),
+      child: MaterialApp(
+        theme: ThemeData(platform: platform),
+        home: const BookDetailScreen(ref: ref),
+      ),
     );
   }
 
-  Future<FakeBackend> openReader(WidgetTester tester) async {
+  Future<FakeBackend> openReader(
+    WidgetTester tester, {
+    TargetPlatform platform = TargetPlatform.android,
+  }) async {
     final FakeBackend backend = FakeBackend(text: chapterText);
-    await tester.pumpWidget(wrap(backend));
+    await tester.pumpWidget(wrap(backend, platform: platform));
     await drain(tester);
     await tester.tap(find.text('第 1 章'));
     await drain(tester);
@@ -129,8 +139,7 @@ void main() {
 
   group('翻页手势', () {
     testWidgets('触屏上点右边 1/4 翻到下一章，点中间不翻', (WidgetTester tester) async {
-      debugDefaultTargetPlatformOverride = TargetPlatform.android;
-      await openReader(tester);
+      await openReader(tester, platform: TargetPlatform.android);
       expect(find.text('1 / 3'), findsOneWidget);
 
       await tester.tapAt(const Offset(780, 300));
@@ -149,8 +158,7 @@ void main() {
 
     testWidgets('桌面上点边缘不翻章 —— 那是几百像素的死区，而且鼠标点击是选词',
         (WidgetTester tester) async {
-      debugDefaultTargetPlatformOverride = TargetPlatform.linux;
-      await openReader(tester);
+      await openReader(tester, platform: TargetPlatform.linux);
 
       await tester.tapAt(const Offset(780, 300));
       await drain(tester);
@@ -159,8 +167,7 @@ void main() {
     });
 
     testWidgets('方向键翻章 —— 桌面上这是主要入口', (WidgetTester tester) async {
-      debugDefaultTargetPlatformOverride = TargetPlatform.linux;
-      await openReader(tester);
+      await openReader(tester, platform: TargetPlatform.linux);
 
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
       await drain(tester);
