@@ -35,9 +35,13 @@ class ReaderController extends ChangeNotifier {
         _pendingOffset = charOffset;
 
   final FunreadApi _api;
-  final BookRef _ref;
-  final BookInfo _info;
-  final List<Chapter> _chapters;
+
+  // 下面三个都会被换源整组换掉（[adoptSource]）：换源之后 BookInfo 的
+  // variables 是上一个源的规则状态、目录序号的含义也变了，一个都不能沿用。
+  BookRef _ref;
+  BookInfo _info;
+  List<Chapter> _chapters;
+
   final bool _onShelf;
 
   /// 进度回写的节流窗口。
@@ -79,6 +83,11 @@ class ReaderController extends ChangeNotifier {
   bool _dirty = false;
 
   BookRef get ref => _ref;
+
+  /// 当前这个源下的书籍详情。换源之后是新源的那一份 —— 界面拿它做标题兜底
+  /// 时要读这个，不要读建页时传进来的那个 widget 参数。
+  BookInfo get info => _info;
+
   List<Chapter> get chapters => _chapters;
   int get position => _position;
   ChapterContent? get content => _content;
@@ -159,6 +168,69 @@ class ReaderController extends ChangeNotifier {
     _position = target;
     _restoreOffset = 0;
     _pendingOffset = 0;
+    await load();
+  }
+
+  /// 换源之后用新源把整条链重算一遍，**人留在正文页**。
+  ///
+  /// 「读到一半源挂了」正是最需要换源的时刻，而把人弹回详情页等于让他在上千章
+  /// 的目录里重新找自己读到哪 —— 所以这里不 pop，就地把详情、目录、正文全部
+  /// 换成新源的。
+  ///
+  /// 三样东西一个都不能沿用，这是换源最容易写错的地方：
+  ///  - [BookInfo.variables] 是**上一个源**的规则状态，带过去的表现是静默读空；
+  ///  - 目录序号在新源里是另一套编号，所以 [chapterIndex]（后端给的，已经是
+  ///    新目录的序号）要再过一次 [positionOfChapter] 才能当下标用；
+  ///  - 章内偏移同样作废 —— 后端在重定位时已经把 `char_offset` 清零了，
+  ///    两个源的同一章字数对不上，沿用它只会落在一个随机的位置。
+  Future<void> adoptSource({
+    required int urlId,
+    required String bookUrl,
+    required int chapterIndex,
+  }) async {
+    final int token = ++_generation;
+    _ref = _ref.withSource(urlId: urlId, bookUrl: bookUrl);
+    // 旧源的正文立刻作废。留着它会让人以为换源没生效。
+    _content = null;
+    _paragraphs = const <ChapterParagraph>[];
+    _loading = true;
+    _error = null;
+    // 还没写出去的那笔进度属于旧源。后端刚刚按新目录重定位过，
+    // 这时候再补写一次旧位置就是拿旧源的序号盖掉刚算好的那条。
+    _dirty = false;
+    _saveTimer?.cancel();
+    _saveTimer = null;
+    notifyListeners();
+
+    try {
+      final BookInfo info = await _api.reader.bookInfo(
+        urlId: urlId,
+        bookUrl: bookUrl,
+        name: _ref.name,
+        author: _ref.author,
+      );
+      if (token != _generation) return;
+      final TocPage page = await _api.reader.toc(urlId, info);
+      if (token != _generation) return;
+      if (page.items.isEmpty) {
+        _error = '新源没有返回任何章节。再换一个 —— '
+            '书源池里能跑通的只有个位数百分比。';
+        _loading = false;
+        notifyListeners();
+        return;
+      }
+      _info = info;
+      _chapters = page.items;
+      _position = math.max(0, positionOfChapter(_chapters, chapterIndex));
+      _restoreOffset = 0;
+      _pendingOffset = 0;
+    } on ApiException catch (error) {
+      if (token != _generation) return;
+      _error = error.message;
+      _loading = false;
+      notifyListeners();
+      return;
+    }
     await load();
   }
 

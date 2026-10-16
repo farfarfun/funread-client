@@ -7,6 +7,7 @@ import '../models/models.dart';
 import '../state/book_detail_controller.dart';
 import 'book_cover.dart';
 import 'reader_screen.dart';
+import 'source_switch_sheet.dart';
 
 /// 书籍详情页：书名 / 作者 / 简介 / 封面 + 目录。
 ///
@@ -86,6 +87,26 @@ class _BookDetailScreenState extends State<BookDetailScreen> {
     _say(message);
   }
 
+  /// 换源。
+  ///
+  /// 入口在详情页和正文页都有。这里换完之后详情和目录都要用新源重算 ——
+  /// 新源的 `variables` 和目录序号都是它自己那一套。
+  Future<void> _switchSource() async {
+    final BookDetailController detail = _detail!;
+    final SourceSwitchOutcome? outcome = await showSourceSwitchSheet(
+      context,
+      api: AppScope.of(context).api,
+      bookKey: detail.ref.bookKey,
+      onShelf: detail.onShelf,
+    );
+    if (outcome == null || !mounted) return;
+    _say(outcome.result.describe(outcome.candidate.displayName));
+    await detail.adoptSource(
+      urlId: outcome.candidate.urlId,
+      bookUrl: outcome.candidate.bookUrl,
+    );
+  }
+
   void _read(int position) {
     final BookDetailController detail = _detail!;
     final BookInfo? info = detail.info;
@@ -125,6 +146,17 @@ class _BookDetailScreenState extends State<BookDetailScreen> {
         return Scaffold(
           appBar: AppBar(
             title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
+            actions: <Widget>[
+              // 不在书架时**禁用**而不是点了报 404：后端要靠书架记录恢复书名
+              // 才能跨源搜索。长按能看到这句解释，详情头部也写了一遍。
+              IconButton(
+                tooltip: detail.onShelf ? '换源' : '换源需要先把这本书加入书架',
+                onPressed: detail.onShelf && detail.info != null
+                    ? () => unawaited(_switchSource())
+                    : null,
+                icon: const Icon(Icons.swap_horiz),
+              ),
+            ],
           ),
           body: _body(context, detail),
           bottomNavigationBar: info == null ? null : _dock(detail),
@@ -256,6 +288,15 @@ class _BookDetailScreenState extends State<BookDetailScreen> {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
+                    if (!detail.onShelf) ...<Widget>[
+                      const SizedBox(height: 4),
+                      // 右上角那个换源按钮为什么是灰的。禁用态本身不会解释
+                      // 自己，而「加入书架」和「能换源」看不出有什么关系。
+                      Text(
+                        '换源需要先加入书架（后端要靠书架记录恢复书名才能跨源搜索）。',
+                        style: theme.textTheme.bodySmall,
+                      ),
+                    ],
                   ],
                 ),
               ),

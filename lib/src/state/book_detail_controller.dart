@@ -107,6 +107,19 @@ class BookDetailController extends ChangeNotifier {
     }
   }
 
+  /// 换源之后用新源重算详情和目录。
+  ///
+  /// 整条链都要重来，不是只换一个 `url_id`：新源的 [BookInfo.variables] 是
+  /// 它自己的规则状态，目录序号也是另一套编号。顺带会重读一次书架 ——
+  /// 后端在换源时把进度重定位过了，不重读的话底部还显示旧的「续读第 N 章」。
+  Future<void> adoptSource({required int urlId, required String bookUrl}) async {
+    _ref = _ref.withSource(urlId: urlId, bookUrl: bookUrl);
+    _info = null;
+    _chapters = const <Chapter>[];
+    _tocError = null;
+    await load();
+  }
+
   /// 加入书架。返回一句给用户看的话（成功和失败都有）。
   Future<String> addToShelf() async {
     final BookInfo? info = _info;

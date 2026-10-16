@@ -11,6 +11,7 @@ import '../state/reader_settings_controller.dart';
 import 'chapter_layout.dart';
 import 'reader_palette.dart';
 import 'reader_settings_sheet.dart';
+import 'source_switch_sheet.dart';
 
 /// 正文阅读页。滚动式，字号 / 行距 / 页边距 / 主题可调。
 ///
@@ -270,6 +271,71 @@ class _ReaderScreenState extends State<ReaderScreen> with WidgetsBindingObserver
     );
   }
 
+  void _say(String message) {
+    if (message.isEmpty || !mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  /// 换源，**换完留在这一页接着读**。
+  ///
+  /// 这个入口在正文页存在的全部理由：读到一半源挂了才是最需要换源的时刻。
+  /// 把人弹回详情页等于让他在上千章的目录里重新找自己读到哪 —— 那正是
+  /// 换源想省掉的那件事。
+  Future<void> _switchSource() async {
+    final ReaderController reader = _reader!;
+    final SourceSwitchOutcome? outcome = await showSourceSwitchSheet(
+      context,
+      api: AppScope.of(context).api,
+      bookKey: reader.ref.bookKey,
+      onShelf: reader.onShelf,
+      // 后端是拿**库里那条进度记录**的章节名去新源目录里定位的，不是拿请求体。
+      // 不先写这一笔，换完源就回到第一章。
+      saveProgressFirst: reader.flush,
+      palette: ReaderPalette.of(_settings!.value.theme),
+    );
+    if (outcome == null || !mounted) return;
+    await reader.adoptSource(
+      urlId: outcome.candidate.urlId,
+      bookUrl: outcome.candidate.bookUrl,
+      chapterIndex: outcome.result.chapterIndex,
+    );
+    if (!mounted) return;
+    await _announceSwitch(outcome);
+  }
+
+  /// 换源之后告诉用户落在了哪儿。
+  ///
+  /// 定位方式决定说法：按章节名对上的报一句就行；按比例估的（`position`）
+  /// **必然不准**，两个源的分卷方式、番外收录、章节拆分粒度都不一样，
+  /// 所以那种情况要停下来让人确认，而不是让他读了两章才发现跳了。
+  Future<void> _announceSwitch(SourceSwitchOutcome outcome) async {
+    final ReaderController reader = _reader!;
+    final String text = outcome.result.describe(outcome.candidate.displayName);
+    // 新源的目录没取回来时这一页已经是错误态了，再叠一个对话框只是噪音。
+    if (!outcome.result.needsConfirm || reader.chapters.isEmpty) {
+      _say(text);
+      return;
+    }
+    final bool? openToc = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) => AlertDialog(
+        title: const Text('确认一下落点'),
+        content: Text('$text\n\n如果这里不是你读到的地方，打开目录自己挑一章。'),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('就从这里读'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('打开目录'),
+          ),
+        ],
+      ),
+    );
+    if ((openToc ?? false) && mounted) _openToc();
+  }
+
   /// 排版设置面板。
   void _openSettings() {
     final ReaderSettingsController settings = _settings!;
@@ -327,9 +393,10 @@ class _ReaderScreenState extends State<ReaderScreen> with WidgetsBindingObserver
         final ReaderSettings style = settings.value;
         final ReaderPalette palette = ReaderPalette.of(style.theme);
         // 标题优先用正文页抓到的那个：目录里的章节名常常带着源站自己的前后缀。
+        // 兜底读 reader.info 而不是 widget.info：换源之后后者是旧源的那一份。
         final String title = content != null && content.title.isNotEmpty
             ? content.title
-            : (chapter?.name ?? widget.info.name);
+            : (chapter?.name ?? reader.info.name);
         return CallbackShortcuts(
           // 桌面上这是**主要**翻章方式：那里没有边缘手势。
           bindings: <ShortcutActivator, VoidCallback>{
@@ -352,6 +419,15 @@ class _ReaderScreenState extends State<ReaderScreen> with WidgetsBindingObserver
                 scrolledUnderElevation: 0,
                 title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
                 actions: <Widget>[
+                  // 试读（书不在书架）时禁用：后端要靠书架记录恢复书名才能
+                  // 跨源搜索，让人点出一个 404 不是解释。长按看原因。
+                  IconButton(
+                    tooltip: reader.onShelf ? '换源' : '换源需要先把这本书加入书架',
+                    onPressed: reader.onShelf
+                        ? () => unawaited(_switchSource())
+                        : null,
+                    icon: const Icon(Icons.swap_horiz),
+                  ),
                   IconButton(
                     tooltip: '排版',
                     onPressed: _openSettings,
@@ -415,6 +491,10 @@ class _ReaderScreenState extends State<ReaderScreen> with WidgetsBindingObserver
                 onPressed: () => unawaited(reader.load()),
                 child: const Text('重试'),
               ),
+              const SizedBox(height: 8),
+              // 读不出来的时候「换一个源」比「再试一次」有用得多：同一本书在
+              // 不同源下的存活率差很多，而重试打的是同一个已经挂了的源。
+              _switchSourceAction(reader, palette),
             ],
           ),
         ),
@@ -424,21 +504,46 @@ class _ReaderScreenState extends State<ReaderScreen> with WidgetsBindingObserver
     final List<ChapterParagraph> paragraphs = reader.paragraphs;
     if (paragraphs.isEmpty) {
       return Center(
-        child: Padding(
+        child: SingleChildScrollView(
           padding: const EdgeInsets.all(24),
-          // 空正文不报错是后端的常态：规则没匹配到就是空串。说清楚，
-          // 否则用户以为是客户端没渲染出来。
-          child: Text(
-            '这一章是空的。\n\n多半是这个源的正文规则没匹配上，而不是章节本身没有内容。'
-            '返回详情页换一个源通常能读到。',
-            textAlign: TextAlign.center,
-            style: TextStyle(color: palette.muted),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              // 空正文不报错是后端的常态：规则没匹配到就是空串。说清楚，
+              // 否则用户以为是客户端没渲染出来。
+              Text(
+                '这一章是空的。\n\n多半是这个源的正文规则没匹配上，'
+                '而不是章节本身没有内容。换一个源通常就能读到。',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: palette.muted),
+              ),
+              const SizedBox(height: 12),
+              _switchSourceAction(reader, palette),
+            ],
           ),
         ),
       );
     }
 
     return _chapterText(context, paragraphs, settings, palette);
+  }
+
+  /// 「换个源」按钮，或者「为什么不能换」。
+  ///
+  /// 读不出来的那一刻才是换源最该出现的地方，所以错误态和空正文态里都放一个。
+  Widget _switchSourceAction(ReaderController reader, ReaderPalette palette) {
+    if (!reader.onShelf) {
+      return Text(
+        '换源需要先把这本书加入书架 —— 后端要靠书架里那条记录恢复书名'
+        '才能跨源搜索。返回详情页加入书架之后再来。',
+        textAlign: TextAlign.center,
+        style: TextStyle(color: palette.muted, fontSize: 12),
+      );
+    }
+    return FilledButton.tonal(
+      onPressed: () => unawaited(_switchSource()),
+      child: const Text('换个源试试'),
+    );
   }
 
   /// 正文本体。

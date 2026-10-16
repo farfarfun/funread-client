@@ -41,7 +41,36 @@ class FakeBackend {
   int progressChapterIndex = 1;
   int progressCharOffset = 42;
 
+  /// 书架记录上当前在读的源。换源会改它。
+  int shelfUrlId = currentUrlId;
+
+  /// `POST /shelf/{key}/source` 的出参。测试按需改，用来覆盖
+  /// exact / position / none 三条说法完全不同的分支。
+  String switchMethod = 'exact';
+  int switchChapterIndex = 1;
+  int switchTotal = 5;
+  bool switchApproximate = false;
+
+  /// `GET /reader/sources` 的状态码。404 = 书不在书架（后端的真实行为）。
+  int sourcesStatus = 200;
+
+  /// 换源列表在真实后端上要十几秒。要观察等待期间的界面状态时把它调大。
+  Duration sourcesDelay = Duration.zero;
+
+  /// 这个源的目录回空。书源池里能跑通的只有个位数百分比，「换过去发现
+  /// 新源也是空的」是常态，不是边角情况。
+  int? tocEmptyForUrlId;
+
   static const String bookKey = 'k1';
+
+  /// 默认源，也是现有测试里那一个。
+  static const int currentUrlId = 7;
+
+  /// 换源要切到的那个。它的 variables、章节数、章节名都和 [currentUrlId]
+  /// 不一样 —— 换源之后整条链必须用新源重算，这是唯一能钉住它的办法。
+  static const int otherUrlId = 9;
+  static const String otherBookUrl = 'http://src2.test/b/1';
+  static const int otherChapterCount = 5;
 
   late final FakeAdapter adapter = FakeAdapter(_respond);
 
@@ -84,8 +113,10 @@ class FakeBackend {
               'book_key': bookKey,
               'name': '书名',
               'author': '作者',
-              'url_id': 7,
-              'book_url': 'http://src.test/b/1',
+              'url_id': shelfUrlId,
+              'book_url': shelfUrlId == currentUrlId
+                  ? 'http://src.test/b/1'
+                  : otherBookUrl,
               'progress': <String, dynamic>{
                 'chapter_index': progressChapterIndex,
                 'chapter_name': '第 ${progressChapterIndex + 1} 章',
@@ -97,7 +128,93 @@ class FakeBackend {
         return const FakeResponse(null, statusCode: 204);
       case '/shelf/$bookKey/progress':
         return const FakeResponse(null, statusCode: 204);
+      case '/shelf/$bookKey/source':
+        if (!onShelf) {
+          return const FakeResponse(
+            <String, dynamic>{'detail': '书架里没有这本书'},
+            statusCode: 404,
+          );
+        }
+        // 换源是一次本地写库：书架记录上的源跟着变，进度被重定位到新目录的
+        // 某一章，而章内偏移**一律清零**（偏移不能跨章沿用）。
+        shelfUrlId = int.tryParse(
+              '${(options.data as Map<String, dynamic>?)?['url_id']}',
+            ) ??
+            shelfUrlId;
+        if (switchMethod != 'none' && switchMethod != 'skipped') {
+          progressChapterIndex = switchChapterIndex;
+          progressCharOffset = 0;
+        }
+        return FakeResponse(<String, dynamic>{
+          'method': switchMethod,
+          'chapter_index': switchChapterIndex,
+          'chapter_name': '第 ${switchChapterIndex + 1} 章',
+          'total': switchTotal,
+          'is_approximate': switchApproximate,
+        });
+      case '/reader/sources':
+        if (sourcesStatus != 200) {
+          return FakeResponse(
+            const <String, dynamic>{'detail': '书架里没有这本书'},
+            statusCode: sourcesStatus,
+          );
+        }
+        return FakeResponse(
+          <String, dynamic>{
+            'items': <dynamic>[
+              <String, dynamic>{
+                'url_id': currentUrlId,
+                'source_name': '某书源',
+                'book_url': 'http://src.test/b/1',
+                'name': '书名',
+                'author': '作者',
+                'last_chapter': '第 3 章',
+                'exact': true,
+                'current': true,
+              },
+              <String, dynamic>{
+                'url_id': otherUrlId,
+                'source_name': '另一个源',
+                'book_url': otherBookUrl,
+                'name': '书名',
+                // 同一个人，录入写法不同。这种候选**不能被藏起来**。
+                'author': '作者（著）',
+                'last_chapter': '第 5 章',
+                'exact': false,
+                'current': false,
+              },
+            ],
+            'total': 2,
+            'book_key': bookKey,
+            'name': '书名',
+            'sources_tried': 48,
+            'sources_ok': 11,
+            'hits': 2,
+            'js_skipped': 6,
+            'failed': 37,
+            'waves': 2,
+            'elapsed': 18.4,
+            'exhausted': false,
+            'stopped_by': 'budget',
+          },
+          delay: sourcesDelay,
+        );
       case '/reader/book':
+        final int urlId = int.tryParse('${options.queryParameters['url_id']}') ??
+            currentUrlId;
+        if (urlId != currentUrlId) {
+          return FakeResponse(<String, dynamic>{
+            'name': '书名',
+            'author': '作者（著）',
+            'book_url': otherBookUrl,
+            'toc_url': '$otherBookUrl/toc',
+            'intro': '简介',
+            'source_name': '另一个源',
+            'last_chapter': '第 $otherChapterCount 章',
+            // 新源有自己的一套规则状态，和旧源的那份完全无关。
+            'variables': <String, String>{'token': 'src$urlId'},
+          });
+        }
         return FakeResponse(<String, dynamic>{
           'name': '书名',
           'author': '作者',
@@ -110,6 +227,32 @@ class FakeBackend {
           'variables': bookVariables,
         });
       case '/reader/toc':
+        final Map<String, dynamic> tocBody =
+            options.data as Map<String, dynamic>? ?? <String, dynamic>{};
+        final int tocUrlId =
+            tocBody['url_id'] is int ? tocBody['url_id'] as int : currentUrlId;
+        if (tocUrlId == tocEmptyForUrlId) {
+          return const FakeResponse(<String, dynamic>{
+            'items': <dynamic>[],
+            'total': 0,
+          });
+        }
+        if (tocUrlId != currentUrlId) {
+          // 章节数、章节名、章节 url 全都和旧源不一样：换源之后界面上还显示
+          // 旧目录的话，这个差异会立刻露馅。
+          return FakeResponse(<String, dynamic>{
+            'items': <dynamic>[
+              for (int i = 0; i < otherChapterCount; i++)
+                <String, dynamic>{
+                  'index': i,
+                  'name': '新源第 ${i + 1} 章',
+                  'url': '$otherBookUrl/c/$i',
+                  'variables': <String, String>{'ck': 'src$tocUrlId'},
+                },
+            ],
+            'total': otherChapterCount,
+          });
+        }
         return FakeResponse(<String, dynamic>{
           'items': <dynamic>[
             for (int i = 0; i < chapterCount; i++)

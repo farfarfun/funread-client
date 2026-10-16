@@ -28,6 +28,9 @@ class FakeAdapter implements HttpClientAdapter {
   ) async {
     requests.add(options);
     final FakeResponse reply = respond(options);
+    // 真实后端里「慢」是一等公民（聚合搜索十几秒），测试里默认零延迟。
+    // 只有要观察等待期间的界面状态（计时、禁用）时才把它调大。
+    if (reply.delay > Duration.zero) await Future<void>.delayed(reply.delay);
     if (reply.statusCode == 204) {
       return ResponseBody.fromString('', 204);
     }
@@ -45,10 +48,17 @@ class FakeAdapter implements HttpClientAdapter {
 }
 
 class FakeResponse {
-  const FakeResponse(this.body, {this.statusCode = 200});
+  const FakeResponse(
+    this.body, {
+    this.statusCode = 200,
+    this.delay = Duration.zero,
+  });
 
   /// `body` 是 String 就原样当报文发（测非 JSON 的代理错误页），
   /// 其它类型走 jsonEncode。
   final Object? body;
   final int statusCode;
+
+  /// 回这一条之前先等多久。默认不等。
+  final Duration delay;
 }
