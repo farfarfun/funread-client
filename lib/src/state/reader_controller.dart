@@ -64,6 +64,13 @@ class ReaderController extends ChangeNotifier {
   int _pendingOffset;
   Timer? _saveTimer;
 
+  /// 等用户回答的「别处读到了新进度」。非空期间**一次进度都不写**，
+  /// 见 [checkRemoteProgress]。
+  ProgressConflict? _conflict;
+
+  /// 正在问服务端。防止前台切换抖动时连打好几次 `/shelf`。
+  bool _checking = false;
+
   /// 有没有「还没写回去的进度」。
   ///
   /// 没有它的话，退出页面时一定会多打一次 PUT —— 刚进一章、一行没滚就返回，
@@ -81,6 +88,9 @@ class ReaderController extends ChangeNotifier {
 
   /// 不在书架 = 试读。能读，但没有可写的进度记录（后端会 404）。
   bool get onShelf => _onShelf;
+
+  /// 待用户回答的进度冲突。界面据此弹窗，`null` = 没有要问的。
+  ProgressConflict? get conflict => _conflict;
 
   Chapter? get current =>
       _position >= 0 && _position < _chapters.length ? _chapters[_position] : null;
@@ -178,10 +188,87 @@ class ReaderController extends ChangeNotifier {
     await _save();
   }
 
+  /// 回到前台时问一次服务端：别的设备有没有读到别的地方。
+  ///
+  /// 进度是一人一本书**一条**记录、后写覆盖先写。顺序使用没问题，但有个很常见
+  /// 的场景会咬人：这一页一直开着没关，人在手机上读到了第 100 章，回头碰一下
+  /// 这个停在第 30 章的页面滚一下 —— 旧进度就把新的盖掉了。
+  ///
+  /// **只问不跳。** 自动跳转会在「我就是想回头重读前面几章」时把人强行拽走，
+  /// 而那种情况下服务端进度同样比本地靠后，程序分不出来，只有人能分。
+  ///
+  /// 问到冲突之后到用户回答之前**停写**：否则 resumed 那一下的滚动事件会抢在
+  /// 用户点「跳过去」之前把远端进度盖掉，那就白问了。
+  Future<void> checkRemoteProgress() async {
+    // 试读没有进度记录，问了也只是白打一次 404。
+    if (!_onShelf || _chapters.isEmpty || _conflict != null || _checking) return;
+    _checking = true;
+    ReadingProgress? remote;
+    try {
+      final List<ShelfBook> shelf = await _api.shelf.list();
+      for (final ShelfBook book in shelf) {
+        if (book.bookKey == _ref.bookKey) {
+          remote = book.progress;
+          break;
+        }
+      }
+    } on ApiException {
+      // 掉线或者会话过期都走这里。问不到就当没问过 —— 本地照常读、照常写，
+      // 这比弹一个「同步失败」更合适：用户什么都做不了。
+      return;
+    } finally {
+      _checking = false;
+    }
+    if (remote == null) return;
+    final int target = positionOfChapter(_chapters, remote.chapterIndex);
+    // 同一章就别打扰。章内偏移差几段是「同一个人刚才在这读」的常态，
+    // 为它弹窗等于每次切回前台都弹。
+    if (target < 0 || target == _position) return;
+    _conflict = ProgressConflict(
+      position: target,
+      localPosition: _position,
+      charOffset: remote.charOffset,
+      chapterName: remote.chapterName.isNotEmpty
+          ? remote.chapterName
+          : _chapters[target].name,
+    );
+    notifyListeners();
+  }
+
+  /// 「跳过去」：采纳服务端进度。
+  Future<void> acceptRemoteProgress() async {
+    final ProgressConflict? conflict = _conflict;
+    if (conflict == null) return;
+    _conflict = null;
+    // 本地那段没写出去的进度要丢掉 —— 用户刚说了以远端为准。
+    _dirty = false;
+    _saveTimer?.cancel();
+    _saveTimer = null;
+    _position = conflict.position;
+    _restoreOffset = conflict.charOffset;
+    _pendingOffset = conflict.charOffset;
+    await load();
+  }
+
+  /// 「留在这里」：本地位置就是对的，解禁回写。
+  ///
+  /// 立刻写一次而不是等下一个节流窗口：用户已经明确选了以这边为准，
+  /// 拖着不写的话，另一台设备在这期间再读一下又会把它翻过来。
+  void keepLocalProgress() {
+    if (_conflict == null) return;
+    _conflict = null;
+    _dirty = true;
+    unawaited(_save());
+    notifyListeners();
+  }
+
   Future<void> _save() async {
     // 试读（书不在书架）没有可写的进度记录，后端会 404。直接不发，
     // 省得每个节流窗口都打一次注定失败的请求。
     if (!_onShelf || !_dirty) return;
+    // 有没回答的冲突时一个字节都不写。`_dirty` 保持着，用户选「留在这里」
+    // 之后这一笔会补上。
+    if (_conflict != null) return;
     final Chapter? chapter = current;
     if (chapter == null) return;
     _dirty = false;
@@ -210,6 +297,34 @@ class ReaderController extends ChangeNotifier {
     if (_dirty) unawaited(_save());
     super.dispose();
   }
+}
+
+/// 一个**待回答的问题**：服务端的进度和这一页停的位置对不上。
+///
+/// 它不是「已经发生的跳转」。构造出它来只意味着界面该弹窗了，
+/// 跳不跳由用户决定（[ReaderController.acceptRemoteProgress] /
+/// [ReaderController.keepLocalProgress]）。
+@immutable
+class ProgressConflict {
+  const ProgressConflict({
+    required this.position,
+    required this.localPosition,
+    required this.charOffset,
+    required this.chapterName,
+  });
+
+  /// 服务端进度在目录里的下标。
+  final int position;
+
+  /// 这一页当前停在的下标。弹窗里要把两边都说出来，
+  /// 只说「别处读到第 100 章」用户没法判断该不该跳。
+  final int localPosition;
+
+  /// 服务端那条记录的章内偏移。跳过去之后要落在这里。
+  final int charOffset;
+
+  /// 服务端记的章节名。优先用它而不是本地目录里的名字 —— 两边可能是不同的源。
+  final String chapterName;
 }
 
 /// 滚动位置 ↔ 章内字符偏移。

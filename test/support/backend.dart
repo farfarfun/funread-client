@@ -36,6 +36,11 @@ class FakeBackend {
   /// `GET /shelf` 的状态码。401 用来模拟「没登录也要能试读」。
   final int shelfStatus;
 
+  /// 服务端那条进度记录。**故意不是 final**：测试跑到一半改掉它，就等于
+  /// 「另一台设备在这期间读到了别的地方」—— 多设备冲突只能这么复现。
+  int progressChapterIndex = 1;
+  int progressCharOffset = 42;
+
   static const String bookKey = 'k1';
 
   late final FakeAdapter adapter = FakeAdapter(_respond);
@@ -82,9 +87,9 @@ class FakeBackend {
               'url_id': 7,
               'book_url': 'http://src.test/b/1',
               'progress': <String, dynamic>{
-                'chapter_index': 1,
-                'chapter_name': '第 2 章',
-                'char_offset': 42,
+                'chapter_index': progressChapterIndex,
+                'chapter_name': '第 ${progressChapterIndex + 1} 章',
+                'char_offset': progressCharOffset,
               },
             },
         ]);

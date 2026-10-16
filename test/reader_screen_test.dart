@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:funread_client/src/app_scope.dart';
 import 'package:funread_client/src/models/models.dart';
@@ -15,6 +16,33 @@ import 'support/backend.dart';
 ///  2. **不能让真实插件进来** —— 凭证层在 `FakeBackend` 里已经换成空实现。
 Future<void> drain(WidgetTester tester) async {
   for (int i = 0; i < 20; i++) {
+    await tester.pump(const Duration(milliseconds: 20));
+  }
+}
+
+/// 模拟一次「切走再切回来」。
+///
+/// 走平台消息而不是直接调 `handleAppLifecycleStateChanged`：后者是
+/// `@protected`，从测试里调会被 `flutter analyze` 判成
+/// `invalid_use_of_protected_member`，而本仓库的 analyze 对 info 也返回非零。
+///
+/// 中间状态一个都不能跳：框架会校验相邻状态的合法性，
+/// 从 resumed 直接跳 paused 在断言打开时会炸。
+Future<void> backgroundAndResume(WidgetTester tester) async {
+  const List<AppLifecycleState> path = <AppLifecycleState>[
+    AppLifecycleState.inactive,
+    AppLifecycleState.hidden,
+    AppLifecycleState.paused,
+    AppLifecycleState.hidden,
+    AppLifecycleState.inactive,
+    AppLifecycleState.resumed,
+  ];
+  for (final AppLifecycleState state in path) {
+    await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+      'flutter/lifecycle',
+      const StringCodec().encodeMessage(state.toString()),
+      null,
+    );
     await tester.pump(const Duration(milliseconds: 20));
   }
 }
@@ -96,6 +124,49 @@ void main() {
     expect(find.text('第一段。'), findsOneWidget);
     // 试读不写进度：后端会 404，发了也只是白打一次。
     expect(backend.requestsTo('/shelf/${FakeBackend.bookKey}/progress'), isEmpty);
+  });
+
+  testWidgets('切回前台发现别处读到了新进度：弹窗问，点「跳过去」才跳', (WidgetTester tester) async {
+    final FakeBackend backend = FakeBackend();
+
+    await tester.pumpWidget(wrap(backend));
+    await drain(tester);
+    await tester.tap(find.text('第 1 章'));
+    await drain(tester);
+    expect(find.text('1 / 3'), findsOneWidget);
+
+    // 这一页在后台挂着的时候，手机上读到了第 3 章。
+    backend.progressChapterIndex = 2;
+    await backgroundAndResume(tester);
+    await drain(tester);
+
+    expect(find.text('别处读到了新进度'), findsOneWidget);
+    // 弹窗摆在那儿的时候还没有跳。
+    expect(find.text('1 / 3'), findsOneWidget);
+
+    await tester.tap(find.text('跳过去'));
+    await drain(tester);
+
+    expect(find.text('3 / 3'), findsOneWidget);
+  });
+
+  testWidgets('点「留在这里」就真的留在这里', (WidgetTester tester) async {
+    final FakeBackend backend = FakeBackend();
+
+    await tester.pumpWidget(wrap(backend));
+    await drain(tester);
+    await tester.tap(find.text('第 1 章'));
+    await drain(tester);
+
+    backend.progressChapterIndex = 2;
+    await backgroundAndResume(tester);
+    await drain(tester);
+
+    await tester.tap(find.text('留在这里'));
+    await drain(tester);
+
+    expect(find.text('别处读到了新进度'), findsNothing);
+    expect(find.text('1 / 3'), findsOneWidget);
   });
 
   testWidgets('目录抓不到时单独报错，详情本身还看得见', (WidgetTester tester) async {

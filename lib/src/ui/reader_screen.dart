@@ -41,13 +41,17 @@ class ReaderScreen extends StatefulWidget {
   State<ReaderScreen> createState() => _ReaderScreenState();
 }
 
-class _ReaderScreenState extends State<ReaderScreen> {
+class _ReaderScreenState extends State<ReaderScreen> with WidgetsBindingObserver {
   final ScrollController _scroll = ScrollController();
   ReaderController? _reader;
 
   /// 已经为哪一版正文恢复过滚动位置。防止每次 notify 都重新跳一遍 ——
   /// 那会把用户自己滚到的位置拽回去。
   int _restoredRevision = 0;
+
+  /// 进度冲突的弹窗已经在屏幕上了。没有它的话，弹窗期间的任何一次 notify
+  /// 都会再叠一个一模一样的对话框上去。
+  bool _asking = false;
 
   @override
   void didChangeDependencies() {
@@ -65,17 +69,44 @@ class _ReaderScreenState extends State<ReaderScreen> {
     _reader = reader;
     reader.addListener(_onReaderChanged);
     _scroll.addListener(_onScroll);
+    WidgetsBinding.instance.addObserver(this);
     unawaited(reader.load());
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _scroll.dispose();
     _reader?.removeListener(_onReaderChanged);
     // 控制器的 dispose 里会补写最后一次进度，所以顺序上要在 scroll 之后 ——
     // 它读的是已经记下来的 pendingOffset，不再碰 ScrollController。
     _reader?.dispose();
     super.dispose();
+  }
+
+  /// 前后台切换。
+  ///
+  /// `paused` 补一次写：手机上「切走就再也不回来」是常态，进程被系统回收时
+  /// `dispose` 不一定跑得到，只靠它会丢掉最后那一段。
+  ///
+  /// `resumed` 问一次服务端有没有更新的进度 —— 这一页可能已经在后台停了几天，
+  /// 期间别的设备一直在读。**只问不跳**，见
+  /// [ReaderController.checkRemoteProgress]。
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    final ReaderController? reader = _reader;
+    if (reader == null) return;
+    switch (state) {
+      case AppLifecycleState.paused:
+      case AppLifecycleState.hidden:
+        unawaited(reader.flush());
+      case AppLifecycleState.resumed:
+        unawaited(reader.checkRemoteProgress());
+      case AppLifecycleState.inactive:
+      case AppLifecycleState.detached:
+        break;
+    }
   }
 
   void _onScroll() {
@@ -92,10 +123,70 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   void _onReaderChanged() {
     final ReaderController reader = _reader!;
+    if (reader.conflict != null && !_asking) {
+      _asking = true;
+      // 不在 notify 的同步路径里弹窗：这一下可能正发生在 build 过程中。
+      WidgetsBinding.instance.addPostFrameCallback((_) => _askAboutProgress());
+    }
     if (reader.revision == _restoredRevision) return;
     _restoredRevision = reader.revision;
     // 正文刚进 state，还没布局，此刻 maxScrollExtent 是 0。等这一帧画完再跳。
     WidgetsBinding.instance.addPostFrameCallback((_) => _restoreOffset());
+  }
+
+  /// 弹「别处读到了新进度」。
+  ///
+  /// 两个选项，**没有默认动作**：点叉、按返回键都算「留在这里」。
+  /// 这是故意的 —— 悄悄跳走比不跳糟糕得多，而「留在这里」最坏的后果只是
+  /// 下一次回写把远端的位置覆盖掉，那本来就是用户选的。
+  void _askAboutProgress() {
+    final ReaderController? reader = _reader;
+    if (reader == null || !mounted) {
+      _asking = false;
+      return;
+    }
+    final ProgressConflict? conflict = reader.conflict;
+    // 这一页被别的页面压在下面时不弹：对话框会盖在那一页上，
+    // 用户根本不知道它在问哪本书。下次回前台会再问。
+    if (conflict == null || !(ModalRoute.of(context)?.isCurrent ?? true)) {
+      _asking = false;
+      return;
+    }
+    unawaited(_showProgressDialog(reader, conflict));
+  }
+
+  Future<void> _showProgressDialog(
+    ReaderController reader,
+    ProgressConflict conflict,
+  ) async {
+    final bool? jump = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) => AlertDialog(
+        title: const Text('别处读到了新进度'),
+        content: Text(
+          '另一台设备读到「${conflict.chapterName}」'
+          '（第 ${conflict.position + 1} 章），'
+          '这一页停在第 ${conflict.localPosition + 1} 章。',
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('留在这里'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('跳过去'),
+          ),
+        ],
+      ),
+    );
+    _asking = false;
+    if (!mounted) return;
+    if (jump ?? false) {
+      await _go(reader.acceptRemoteProgress);
+      return;
+    }
+    reader.keepLocalProgress();
   }
 
   void _restoreOffset() {
