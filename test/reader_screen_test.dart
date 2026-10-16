@@ -150,6 +150,32 @@ void main() {
     expect(find.text('3 / 3'), findsOneWidget);
   });
 
+  testWidgets('面板开着的时候不抢着弹，回前台再补问', (WidgetTester tester) async {
+    final FakeBackend backend = FakeBackend();
+
+    await tester.pumpWidget(wrap(backend));
+    await drain(tester);
+    await tester.tap(find.text('第 1 章'));
+    await drain(tester);
+
+    // 目录抽屉开着。这时候弹对话框会盖在抽屉上，用户不知道它在问什么。
+    await tester.tap(find.byTooltip('目录'));
+    await drain(tester);
+    backend.progressChapterIndex = 2;
+    await backgroundAndResume(tester);
+    await drain(tester);
+    expect(find.text('别处读到了新进度'), findsNothing);
+
+    // 关掉抽屉，下次回前台要补问 —— 冲突没回答之前进度是停写的，
+    // 不补问就一直停在那儿。
+    await tester.tapAt(const Offset(400, 20));
+    await drain(tester);
+    await backgroundAndResume(tester);
+    await drain(tester);
+
+    expect(find.text('别处读到了新进度'), findsOneWidget);
+  });
+
   testWidgets('点「留在这里」就真的留在这里', (WidgetTester tester) async {
     final FakeBackend backend = FakeBackend();
 

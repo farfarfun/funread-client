@@ -137,6 +137,9 @@ class _ReaderScreenState extends State<ReaderScreen> with WidgetsBindingObserver
       case AppLifecycleState.hidden:
         unawaited(reader.flush());
       case AppLifecycleState.resumed:
+        // 上一次没问成（那会儿正开着目录或设置面板）就补问一次：
+        // 冲突没回答之前进度是停写的，不补问就一直停在那儿。
+        _askAboutProgress();
         unawaited(reader.checkRemoteProgress());
       case AppLifecycleState.inactive:
       case AppLifecycleState.detached:
@@ -156,8 +159,7 @@ class _ReaderScreenState extends State<ReaderScreen> with WidgetsBindingObserver
 
   void _onReaderChanged() {
     final ReaderController reader = _reader!;
-    if (reader.conflict != null && !_asking) {
-      _asking = true;
+    if (reader.conflict != null) {
       // 不在 notify 的同步路径里弹窗：这一下可能正发生在 build 过程中。
       WidgetsBinding.instance.addPostFrameCallback((_) => _askAboutProgress());
     }
@@ -174,17 +176,14 @@ class _ReaderScreenState extends State<ReaderScreen> with WidgetsBindingObserver
   /// 下一次回写把远端的位置覆盖掉，那本来就是用户选的。
   void _askAboutProgress() {
     final ReaderController? reader = _reader;
-    if (reader == null || !mounted) {
-      _asking = false;
-      return;
-    }
+    if (_asking || reader == null || !mounted) return;
     final ProgressConflict? conflict = reader.conflict;
-    // 这一页被别的页面压在下面时不弹：对话框会盖在那一页上，
-    // 用户根本不知道它在问哪本书。下次回前台会再问。
-    if (conflict == null || !(ModalRoute.of(context)?.isCurrent ?? true)) {
-      _asking = false;
-      return;
-    }
+    if (conflict == null) return;
+    // 这一页被自己的面板压在下面时不弹：对话框会盖在面板上，
+    // 用户根本不知道它在问什么。回前台时会补问（见
+    // [didChangeAppLifecycleState]）。
+    if (!(ModalRoute.of(context)?.isCurrent ?? true)) return;
+    _asking = true;
     unawaited(_showProgressDialog(reader, conflict));
   }
 
