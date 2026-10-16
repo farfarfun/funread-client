@@ -11,7 +11,6 @@ coverage/
 # pubspec.lock：这个仓库建起来的时候本机没有 Flutter SDK，生成不出可信的锁文件，
 # 提一份手写的进来比不提更糟（解析结果是假的）。第一个装了 SDK 的人跑完
 # `flutter pub get` 之后，应该把这行删掉并把 lock 提交进来 —— 应用仓库是要锁的。
-pubspec.lock
 
 # IDE
 .idea/

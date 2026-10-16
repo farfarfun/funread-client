@@ -3,6 +3,12 @@ include: package:flutter_lints/flutter.yaml
 analyzer:
   exclude:
     - build/**
+    - android/**
+    - ios/**
+    - web/**
+    - windows/**
+    - macos/**
+    - linux/**
 
   errors:
     # CI 跑的是 `flutter analyze`，它对任何等级的问题都返回非零，
