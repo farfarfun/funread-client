@@ -208,4 +208,160 @@ void main() {
       expect(state.admin, isFalse);
     });
   });
+
+  group('SwitchSourcePage', () {
+    /// 贴的是 `funread_api/v1/reader.py` 的 `SwitchSourcePage` / `SwitchCandidate`：
+    /// 统计字段和 `/reader/search` 一样**平铺**在同一层。
+    SwitchSourcePage parse() {
+      return SwitchSourcePage.fromJson(<String, dynamic>{
+        'items': <dynamic>[
+          <String, dynamic>{
+            'url_id': 7,
+            'source_name': '某书源',
+            'book_url': 'http://src.test/b/1',
+            'name': '诡秘之主',
+            'author': '爱潜水的乌贼',
+            'last_chapter': '第1430章',
+            'exact': true,
+            'current': true,
+          },
+          <String, dynamic>{
+            'url_id': 9,
+            'source_name': '另一个源',
+            'book_url': 'http://src2.test/b/1',
+            'name': '诡秘之主',
+            // 同一个人，写法不一样。这一条恰恰常常是还活着的那个源。
+            'author': '爱潜水的乌贼（著）',
+            'last_chapter': '第1431章',
+            'exact': false,
+            'current': false,
+          },
+        ],
+        'total': 2,
+        'book_key': 'abc123',
+        'name': '诡秘之主',
+        'sources_tried': 48,
+        'sources_ok': 11,
+        'hits': 2,
+        'js_skipped': 6,
+        'failed': 37,
+        'waves': 2,
+        'elapsed': 18.4,
+        'exhausted': false,
+        'stopped_by': 'budget',
+      });
+    }
+
+    test('候选和平铺的统计一起解析出来', () {
+      final SwitchSourcePage page = parse();
+      expect(page.items, hasLength(2));
+      expect(page.bookKey, 'abc123');
+      expect(page.name, '诡秘之主');
+      expect(page.stats.sourcesTried, 48);
+      expect(page.stats.stoppedBy, 'budget');
+      expect(page.items.first.displayName, '某书源');
+      expect(page.items.first.current, isTrue);
+    });
+
+    test('exact=false 的候选分到另一组，但一条都不能少', () {
+      final SwitchSourcePage page = parse();
+      expect(page.exactItems, hasLength(1));
+      expect(page.looseItems, hasLength(1));
+      // 关键：两组加起来就是全部。过滤掉近似匹配 = 换源列表永远是空的。
+      expect(page.exactItems.length + page.looseItems.length, page.items.length);
+      expect(page.looseItems.single.author, '爱潜水的乌贼（著）');
+    });
+
+    test('源名为空时退回「源 #id」，不要显示一个空行', () {
+      final SwitchCandidate candidate = SwitchCandidate.fromJson(
+        <String, dynamic>{'url_id': 12, 'source_name': '', 'book_url': 'u'},
+      );
+      expect(candidate.displayName, '源 #12');
+      expect(candidate.exact, isFalse);
+    });
+
+    test('空列表的解释要区分「源都没答」和「确实只有这一个源」', () {
+      SwitchSourcePage empty(Map<String, dynamic> stats) =>
+          SwitchSourcePage.fromJson(<String, dynamic>{
+            'items': <dynamic>[],
+            'total': 0,
+            ...stats,
+          });
+
+      expect(empty(<String, dynamic>{'sources_tried': 0}).explainEmpty(),
+          contains('候选源池是空的'));
+      expect(
+        empty(<String, dynamic>{'sources_tried': 40, 'sources_ok': 0}).explainEmpty(),
+        contains('都没有响应'),
+      );
+      expect(
+        empty(<String, dynamic>{
+          'sources_tried': 400,
+          'sources_ok': 90,
+          'exhausted': true,
+        }).explainEmpty(),
+        contains('只有当前这一个源'),
+      );
+    });
+  });
+
+  group('SwitchSourceResult', () {
+    SwitchSourceResult parse(Map<String, dynamic> json) =>
+        SwitchSourceResult.fromJson(json);
+
+    test('按章节名定位到了就直接接着读，不必打扰用户', () {
+      final SwitchSourceResult result = parse(<String, dynamic>{
+        'method': 'normalized',
+        'chapter_index': 101,
+        'chapter_name': '第 102 章',
+        'total': 1430,
+        'is_approximate': false,
+      });
+      expect(result.method, SwitchMethod.normalized);
+      expect(result.relocated, isTrue);
+      expect(result.needsConfirm, isFalse);
+      expect(result.describe('某书源'), contains('第 102 / 1430 章'));
+    });
+
+    test('position 是按比例估的，必然不准 —— 要提示确认', () {
+      final SwitchSourceResult result = parse(<String, dynamic>{
+        'method': 'position',
+        'chapter_index': 90,
+        'chapter_name': '第 91 章',
+        'total': 1200,
+        'is_approximate': true,
+      });
+      expect(result.relocated, isTrue);
+      expect(result.needsConfirm, isTrue);
+      expect(result.describe('某书源'), contains('偏差'));
+    });
+
+    test('none：目录都没拿到，total 是 0，不要写成「第 N / 0 章」', () {
+      final SwitchSourceResult result = parse(<String, dynamic>{
+        'method': 'none',
+        'chapter_index': 30,
+        'chapter_name': '第 31 章',
+        'total': 0,
+      });
+      expect(result.relocated, isFalse);
+      expect(result.needsConfirm, isTrue);
+      expect(result.describe(''), isNot(contains('/ 0')));
+      expect(result.describe(''), contains('目录'));
+    });
+
+    test('skipped = 本来就没有进度可搬，不是失败', () {
+      final SwitchSourceResult result =
+          parse(<String, dynamic>{'method': 'skipped', 'total': 0});
+      expect(result.method, SwitchMethod.skipped);
+      expect(result.needsConfirm, isFalse);
+      expect(result.describe('某书源'), contains('还没有阅读进度'));
+    });
+
+    test('不认识的 method 当成「说不准」，宁可多问一次', () {
+      final SwitchSourceResult result =
+          parse(<String, dynamic>{'method': 'fuzzy-v2', 'total': 5});
+      expect(result.method, SwitchMethod.unknown);
+      expect(result.needsConfirm, isTrue);
+    });
+  });
 }

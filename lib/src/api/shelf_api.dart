@@ -75,6 +75,41 @@ class ShelfApi {
     await _client.delete('/shelf/$bookKey');
   }
 
+  /// 换源：把书架记录上的源坐标换成 [urlId] / [bookUrl]。
+  ///
+  /// [remapProgress] 为真（默认）时后端会**再抓一次新源的目录**，拿已经存着的
+  /// 章节名去新目录里找同一章，所以：
+  ///
+  ///  - 调它之前必须先把当前进度写掉（[saveProgress]）。后端是按**库里那条
+  ///    记录**定位的，不是按请求里的任何字段 —— 少写这一步的表现是换完源
+  ///    回到第一章。
+  ///  - 它要抓目录，所以慢，接收超时按 `/reader/toc` 的量级给。
+  ///
+  /// 出参说的是「进度落在新源的第几章、怎么定位的」，见 [SwitchSourceResult]。
+  /// 新源抓不到目录时它回 `method=none` 而**不是** 502 —— 换源本身是一次本地
+  /// 写库，在重定位之前就已经成功了，没成的只是重定位。
+  ///
+  /// 副作用：后端会清掉这本书在**服务端**那层的全部章节缓存（那层按
+  /// `book_key + chapter_index` 索引、不带源，换源之后序号的含义就变了）。
+  /// 本机那层离线缓存是另一回事，见 `offline/offline_store.dart`。
+  Future<SwitchSourceResult> switchSource(
+    String bookKey, {
+    required int urlId,
+    required String bookUrl,
+    bool remapProgress = true,
+  }) async {
+    final Object? data = await _client.post(
+      '/shelf/$bookKey/source',
+      body: <String, dynamic>{
+        'url_id': urlId,
+        'book_url': bookUrl,
+        'remap_progress': remapProgress,
+      },
+      receiveTimeout: const Duration(seconds: 90),
+    );
+    return SwitchSourceResult.fromJson(asMap(data));
+  }
+
   /// 保存进度。返回 204，没有 body。
   Future<void> saveProgress(
     String bookKey, {

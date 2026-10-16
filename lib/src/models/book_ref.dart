@@ -59,4 +59,19 @@ class BookRef {
       author: author,
     );
   }
+
+  /// 换源：同一本书（[bookKey] 不变），换一组源坐标。
+  ///
+  /// [bookKey] 是 `md5(书名\n作者)`，和源无关，所以换源之后进度、书架记录、
+  /// 服务端章节缓存仍然挂在同一个 key 下。换掉的只有「去哪儿抓」。
+  /// 书名 / 作者也原样留着：它们是给新源做二次校验用的入参。
+  BookRef withSource({required int urlId, required String bookUrl}) {
+    return BookRef(
+      bookKey: bookKey,
+      urlId: urlId,
+      bookUrl: bookUrl,
+      name: name,
+      author: author,
+    );
+  }
 }

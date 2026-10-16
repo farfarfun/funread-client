@@ -104,6 +104,46 @@ void main() {
       expect(book['variables'], <String, String>{'token': 'xyz'});
       expect(book['book_url'], 'http://src.test/b/1');
     });
+
+    test('sources 只带 book_key，并且用放宽后的接收超时', () async {
+      final ({FunreadApi api, FakeAdapter adapter}) t = build(
+        (RequestOptions options) => const FakeResponse(<String, dynamic>{
+          'items': <dynamic>[],
+          'total': 0,
+          'book_key': 'k1',
+          'name': '书名',
+        }),
+      );
+
+      await t.api.reader.sources('k1');
+
+      final RequestOptions request = t.adapter.lastRequest;
+      expect(request.uri.path, '/api/v1/reader/sources');
+      expect(request.method, 'GET');
+      // 后端只认这一个参数（书名要从调用者自己的书架记录里恢复）。
+      expect(request.queryParameters, <String, dynamic>{'book_key': 'k1'});
+      // 这是一次实时聚合搜索，服务端墙钟预算 25 秒。按默认的 30 秒收，
+      // 稍微堵一下就变成「每次换源都超时」。
+      expect(request.receiveTimeout, AppConfig.searchTimeout);
+    });
+
+    test('书不在书架时 /reader/sources 回 404，要原样把后端那句话抛上去', () async {
+      final ({FunreadApi api, FakeAdapter adapter}) t = build(
+        (RequestOptions options) => const FakeResponse(
+          <String, dynamic>{'detail': '书架里没有这本书'},
+          statusCode: 404,
+        ),
+      );
+
+      await expectLater(
+        t.api.reader.sources('k1'),
+        throwsA(
+          isA<ApiException>()
+              .having((ApiException e) => e.message, 'message', '书架里没有这本书')
+              .having((ApiException e) => e.statusCode, 'statusCode', 404),
+        ),
+      );
+    });
   });
 
   group('shelf', () {
@@ -116,6 +156,36 @@ void main() {
 
       await t.api.shelf.list(group: '');
       expect(t.adapter.lastRequest.queryParameters['group'], '');
+    });
+
+    test('换源 POST 到 /shelf/{key}/source，body 就是三个字段', () async {
+      final ({FunreadApi api, FakeAdapter adapter}) t = build(
+        (RequestOptions options) => const FakeResponse(<String, dynamic>{
+          'method': 'exact',
+          'chapter_index': 12,
+          'chapter_name': '第 13 章',
+          'total': 500,
+          'is_approximate': false,
+        }),
+      );
+
+      final SwitchSourceResult result = await t.api.shelf.switchSource(
+        'k1',
+        urlId: 9,
+        bookUrl: 'http://src2.test/b/1',
+      );
+
+      final RequestOptions request = t.adapter.lastRequest;
+      expect(request.uri.path, '/api/v1/shelf/k1/source');
+      expect(request.method, 'POST');
+      expect(request.data, <String, dynamic>{
+        'url_id': 9,
+        'book_url': 'http://src2.test/b/1',
+        // 默认要重定位：不传的话后端也默认 true，但显式传更难被误改。
+        'remap_progress': true,
+      });
+      expect(result.method, SwitchMethod.exact);
+      expect(result.chapterIndex, 12);
     });
   });
 

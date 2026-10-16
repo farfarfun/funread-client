@@ -12,3 +12,4 @@ export 'reader_settings.dart';
 export 'search.dart';
 export 'session_state.dart';
 export 'shelf.dart';
+export 'switch_source.dart';
