@@ -6,13 +6,14 @@ import '../app_scope.dart';
 import '../models/models.dart';
 import '../state/auth_controller.dart';
 import '../state/book_search_controller.dart';
+import 'book_cover.dart';
 import 'book_sheet.dart';
 
-/// 搜索页：这一版唯一的功能屏。
+/// 搜索页：整条阅读链路的入口。
 ///
-/// 刻意**没有**做阅读器。搜索 → 详情 → 目录 → 正文里，后三步要处理换源、
-/// 进度回写、离线缓存、分页正文合并，复杂度是这一步的量级之上，
-/// 塞进骨架只会得到一个要重写的版本。详情面板到此为止，给出下一步的入口。
+/// 点一条结果先弹详情面板（一本书往往有好几个源），在面板里选一个源才进详情页。
+/// 不替用户挑源：哪个源真能读出正文，要到目录 / 正文那一步才知道，
+/// 自动选第一个就等于把「这个源挂了」说成「这本书读不了」。
 class SearchScreen extends StatefulWidget {
   const SearchScreen({super.key});
 
@@ -233,7 +234,7 @@ class _BookTile extends StatelessWidget {
       if (book.wordCount.isNotEmpty) book.wordCount,
     ];
     return ListTile(
-      leading: _Cover(url: book.coverUrl),
+      leading: BookCover(url: book.coverUrl),
       title: Text(book.name, maxLines: 1, overflow: TextOverflow.ellipsis),
       subtitle: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -258,55 +259,6 @@ class _BookTile extends StatelessWidget {
         visualDensity: VisualDensity.compact,
       ),
       onTap: () => showBookSheet(context, book),
-    );
-  }
-}
-
-/// 封面。
-///
-/// 大量源的封面地址会 404、要 Referer、或者干脆是 http 混在 https 页面里
-/// 被浏览器拦掉 —— 所以**必须**有 errorBuilder，否则搜索结果里会出现一片
-/// 红色的异常块。加载失败退化成一个图标，不影响读书。
-class _Cover extends StatelessWidget {
-  const _Cover({required this.url});
-
-  final String url;
-
-  @override
-  Widget build(BuildContext context) {
-    const double width = 40;
-    const double height = 56;
-    if (url.isEmpty) return const _CoverPlaceholder(width: width, height: height);
-    return SizedBox(
-      width: width,
-      height: height,
-      child: Image.network(
-        url,
-        fit: BoxFit.cover,
-        errorBuilder: (BuildContext context, Object error, StackTrace? stack) =>
-            const _CoverPlaceholder(width: width, height: height),
-      ),
-    );
-  }
-}
-
-class _CoverPlaceholder extends StatelessWidget {
-  const _CoverPlaceholder({required this.width, required this.height});
-
-  final double width;
-  final double height;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: width,
-      height: height,
-      color: Theme.of(context).colorScheme.surfaceContainerHighest,
-      child: Icon(
-        Icons.book_outlined,
-        size: 20,
-        color: Theme.of(context).disabledColor,
-      ),
     );
   }
 }

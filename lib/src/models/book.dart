@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'json.dart';
 
 /// 书籍详情，同时也是 `/reader/toc` 与 `/reader/content` 的**入参**。
@@ -120,6 +122,28 @@ class Chapter {
       'variables': variables,
     };
   }
+}
+
+/// 把保存下来的 `chapter_index` 换算成目录里的下标。
+///
+/// 后端的 `Chapter.index` 就是抓目录时的序号（引擎里是 `index=len(chapters)`），
+/// 所以正常情况下两者相等，直接当下标用也对。但这个等式不是契约的一部分：
+/// 换源之后新源的序号体系完全不同，源自己返回带洞的序号也不是没有过。
+/// 按值查一遍再兜底到位置，比直接当下标用多几微秒，少一类「跳到了错误的章节」。
+///
+/// 返回 -1 表示目录是空的。
+int positionOfChapter(List<Chapter> chapters, int chapterIndex) {
+  if (chapters.isEmpty) return -1;
+  if (chapterIndex >= 0 &&
+      chapterIndex < chapters.length &&
+      chapters[chapterIndex].index == chapterIndex) {
+    return chapterIndex;
+  }
+  for (int i = 0; i < chapters.length; i++) {
+    if (chapters[i].index == chapterIndex) return i;
+  }
+  // 找不到就按位置夹住 —— 读错一章远好过悄悄回到第一章。
+  return math.max(0, math.min(chapterIndex, chapters.length - 1));
 }
 
 /// `POST /api/v1/reader/toc` 的出参。

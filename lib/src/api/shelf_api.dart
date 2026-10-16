@@ -32,21 +32,43 @@ class ShelfApi {
   ///
   /// 不传 `group` 是故意的：从搜索结果里再点一次「加入书架」不该把书
   /// 从用户分好的组里踢回未分组。
-  Future<String> add(SearchBook book, {SourceRef? source}) async {
+  Future<String> add(SearchBook book, {SourceRef? source}) {
     final SourceRef? ref = source ?? (book.sources.isEmpty ? null : book.sources.first);
-    final Object? data = await _client.post(
-      '/shelf',
-      body: <String, dynamic>{
-        'name': book.name,
-        'author': book.author,
-        'cover_url': book.coverUrl,
-        'intro': book.intro,
-        'url_id': ref?.urlId,
-        'book_url': ref?.bookUrl ?? '',
-        'last_chapter': book.lastChapter,
-      },
-    );
-    return asMap(data)['book_key'] as String? ?? '';
+    return _add(<String, dynamic>{
+      'name': book.name,
+      'author': book.author,
+      'cover_url': book.coverUrl,
+      'intro': book.intro,
+      'url_id': ref?.urlId,
+      'book_url': ref?.bookUrl ?? '',
+      'last_chapter': book.lastChapter,
+    });
+  }
+
+  /// 从详情页加入书架。
+  ///
+  /// 和 [add] 的区别不只是入参类型：详情页已经拿到了 `toc_url`，而搜索结果里
+  /// 没有这个字段。带上它，书架那边做「检查更新」时就不必先走一次
+  /// `/reader/book`——那一步会再打一次源站，正是最容易失败的一步。
+  Future<String> addBook(BookInfo info, {required int urlId}) {
+    return _add(<String, dynamic>{
+      'name': info.name,
+      'author': info.author,
+      'cover_url': info.coverUrl,
+      'intro': info.intro,
+      'url_id': urlId,
+      'book_url': info.bookUrl,
+      'toc_url': info.tocUrl,
+      'last_chapter': info.lastChapter,
+    });
+  }
+
+  /// 出参是 `{"book_key": ...}`。后端算出来的 key 才是权威的 —— 它按自己的
+  /// 口径归一化书名和作者，客户端不要自己算。
+  Future<String> _add(Map<String, dynamic> body) async {
+    final Object? data = await _client.post('/shelf', body: body);
+    final Object? key = asMap(data)['book_key'];
+    return key is String ? key : '';
   }
 
   Future<void> remove(String bookKey) async {

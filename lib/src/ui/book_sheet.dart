@@ -3,8 +3,9 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../models/models.dart';
+import 'book_detail_screen.dart';
 
-/// 搜索结果的详情面板。
+/// 搜索结果的详情面板，同时也是**选源**的地方。
 void showBookSheet(BuildContext context, SearchBook book) {
   unawaited(
     showModalBottomSheet<void>(
@@ -20,6 +21,23 @@ class _BookSheet extends StatelessWidget {
   const _BookSheet({required this.book});
 
   final SearchBook book;
+
+  /// 选定一个源：先关面板再进详情页。
+  ///
+  /// 两件事都走同一个 Navigator（模态底部面板不另起导航器），所以要先把
+  /// NavigatorState 取出来再 pop —— pop 之后这个 context 就失效了。
+  void _open(BuildContext context, SourceRef source) {
+    final NavigatorState navigator = Navigator.of(context);
+    navigator.pop();
+    unawaited(
+      navigator.push<void>(
+        MaterialPageRoute<void>(
+          builder: (BuildContext context) =>
+              BookDetailScreen(ref: BookRef.fromSearch(book, source)),
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -47,11 +65,15 @@ class _BookSheet extends StatelessWidget {
                 Text(book.intro, style: theme.textTheme.bodyMedium),
               ],
               const SizedBox(height: 16),
-              Text('可用书源（${book.sources.length}）',
+              Text('选一个源打开（${book.sources.length}）',
                   style: theme.textTheme.titleSmall),
+              const SizedBox(height: 2),
+              Text(
+                '哪个源能真的读出目录和正文，要点进去才知道 —— 这一个读不出来就回来换下一个。',
+                style: theme.textTheme.bodySmall,
+              ),
               const SizedBox(height: 4),
-              // 同一本书在多个源下都有。哪个能真的读出来，要到目录和正文
-              // 那一步才知道 —— 所以这里全列出来，不做任何筛选或排序暗示。
+              // 全列出来，不做任何筛选或排序暗示。
               ...book.sources.map(
                 (SourceRef ref) => ListTile(
                   dense: true,
@@ -67,36 +89,18 @@ class _BookSheet extends StatelessWidget {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
+                  trailing: const Icon(Icons.chevron_right, size: 18),
+                  onTap: () => _open(context, ref),
                 ),
               ),
-              const SizedBox(height: 12),
-              const _NextPhaseNotice(),
+              if (book.sources.isEmpty)
+                Text(
+                  '这条结果没有带任何源，打不开。再搜一次通常会换一批源。',
+                  style: theme.textTheme.bodySmall,
+                ),
             ],
           ),
         ),
-      ),
-    );
-  }
-}
-
-/// 阅读器还没做，这里把边界说清楚，而不是给一个点下去没反应的按钮。
-class _NextPhaseNotice extends StatelessWidget {
-  const _NextPhaseNotice();
-
-  @override
-  Widget build(BuildContext context) {
-    final ThemeData theme = Theme.of(context);
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Text(
-        '阅读器（详情 / 目录 / 正文 / 换源 / 进度）在下一阶段实现。\n'
-        '这一版只验证搜索链路和接口契约。',
-        style: theme.textTheme.bodySmall,
       ),
     );
   }
