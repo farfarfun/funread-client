@@ -7,6 +7,7 @@ export 'book_ref.dart';
 // 只放出 API 层真正要用的两个解析助手（把出参 cast 成对象 / 列表）。
 // asString / asInt 这些是模型自己的事，不该出现在调用方。
 export 'json.dart' show JsonMap, asList, asMap;
+export 'paragraph.dart';
 export 'search.dart';
 export 'session_state.dart';
 export 'shelf.dart';

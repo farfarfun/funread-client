@@ -48,6 +48,7 @@ class ReaderController extends ChangeNotifier {
 
   int _position;
   ChapterContent? _content;
+  List<ChapterParagraph> _paragraphs = const <ChapterParagraph>[];
   bool _loading = false;
   String? _error;
 
@@ -98,16 +99,11 @@ class ReaderController extends ChangeNotifier {
   bool get hasPrev => _position > 0;
   bool get hasNext => _position < _chapters.length - 1;
 
-  /// 正文按空行切段。源站给的正文是纯文本，段落之间可能是 `\n` 也可能是
-  /// 连续多个换行，统一成「非空行即一段」。
-  List<String> get paragraphs {
-    final String text = _content?.text ?? '';
-    if (text.isEmpty) return const <String>[];
-    return <String>[
-      for (final String line in text.split('\n'))
-        if (line.trim().isNotEmpty) line.trim(),
-    ];
-  }
+  /// 正文按空行切段，每段带着它在原文里的起始下标。
+  ///
+  /// 切好了存着而不是每次 get 现切：滚动时每一帧都要问它，
+  /// 几万字的章节上现切就是每帧一次全章扫描。
+  List<ChapterParagraph> get paragraphs => _paragraphs;
 
   int get totalChars => _content?.text.length ?? 0;
 
@@ -122,6 +118,7 @@ class ReaderController extends ChangeNotifier {
     _loading = true;
     _error = null;
     _content = null;
+    _paragraphs = const <ChapterParagraph>[];
     notifyListeners();
     try {
       final ChapterContent content = await _api.reader.content(
@@ -136,6 +133,7 @@ class ReaderController extends ChangeNotifier {
       );
       if (token != _generation) return;
       _content = content;
+      _paragraphs = splitParagraphs(content.text);
       _revision++;
       // 进了这一章就先把「读到这一章」落下去。只靠滚动触发的话，
       // 短到不需要滚动的章节永远不会被记进进度。
@@ -325,41 +323,4 @@ class ProgressConflict {
 
   /// 服务端记的章节名。优先用它而不是本地目录里的名字 —— 两边可能是不同的源。
   final String chapterName;
-}
-
-/// 滚动位置 ↔ 章内字符偏移。
-///
-/// 进度存字符偏移、不存滚动像素：像素值和字号、行距、屏幕宽度绑死，换台设备
-/// 就是个随机数。字符偏移按「已读字符 / 总字符」乘可滚高度换算回去，**不精确
-/// 但稳定** —— 段落长短不均，所以同一个偏移在不同字号下落点会差几行，
-/// 这个误差是可以接受的，像素值的误差则是整章。
-class ReadingPosition {
-  const ReadingPosition._();
-
-  /// 当前滚动位置对应的字符偏移。
-  static int offsetOf({
-    required double pixels,
-    required double maxExtent,
-    required int totalChars,
-  }) {
-    // 内容一屏装得下（maxExtent == 0）时没有「读到哪」可言，记 0。
-    if (totalChars <= 0 || maxExtent <= 0) return 0;
-    final double ratio = pixels / maxExtent;
-    // 过冲（下拉回弹）会让比例跑到 [0,1] 之外，夹住，否则存进去一个
-    // 大于总字数的偏移，下次恢复时直接落到章尾。
-    if (ratio <= 0) return 0;
-    if (ratio >= 1) return totalChars;
-    return (ratio * totalChars).round();
-  }
-
-  /// 字符偏移对应的滚动位置。
-  static double pixelsOf({
-    required int charOffset,
-    required int totalChars,
-    required double maxExtent,
-  }) {
-    if (charOffset <= 0 || totalChars <= 0 || maxExtent <= 0) return 0;
-    if (charOffset >= totalChars) return maxExtent;
-    return charOffset / totalChars * maxExtent;
-  }
 }

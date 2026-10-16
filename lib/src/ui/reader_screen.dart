@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../app_scope.dart';
 import '../models/models.dart';
 import '../state/reader_controller.dart';
+import 'chapter_layout.dart';
 
 /// 正文阅读页。
 ///
@@ -52,6 +53,22 @@ class _ReaderScreenState extends State<ReaderScreen> with WidgetsBindingObserver
   /// 进度冲突的弹窗已经在屏幕上了。没有它的话，弹窗期间的任何一次 notify
   /// 都会再叠一个一模一样的对话框上去。
   bool _asking = false;
+
+  /// 当前这一版正文的测量结果，以及它对应的排版参数。
+  ChapterLayout? _layout;
+  _LayoutKey? _layoutKey;
+
+  /// 最近一次换算出来的字符偏移。重排（转屏 / 改字号）之后靠它重新锚定 ——
+  /// 像素值在新版面里没有意义，字符偏移有。
+  int _lastCharOffset = 0;
+
+  /// 正文排版。这一版是固定值，可调的设置在下一步。
+  static const double _fontSize = 17;
+  static const double _lineHeight = 1.7;
+  static const double _sideMargin = 20;
+  static const double _topPadding = 16;
+  static const double _bottomPadding = 40;
+  static const double _paragraphSpacing = 16;
 
   @override
   void didChangeDependencies() {
@@ -111,14 +128,12 @@ class _ReaderScreenState extends State<ReaderScreen> with WidgetsBindingObserver
 
   void _onScroll() {
     final ReaderController? reader = _reader;
-    if (reader == null || !_scroll.hasClients) return;
-    reader.onOffsetChanged(
-      ReadingPosition.offsetOf(
-        pixels: _scroll.position.pixels,
-        maxExtent: _scroll.position.maxScrollExtent,
-        totalChars: reader.totalChars,
-      ),
-    );
+    final ChapterLayout? layout = _layout;
+    if (reader == null || layout == null || !_scroll.hasClients) return;
+    // 「视口顶端是第几个字」。不是按整章比例估的 —— 比例法假设字符在章内
+    // 均匀分布，而对话多的章节里一段两个字、一段三百字是常态。
+    _lastCharOffset = layout.charOffsetAt(_scroll.position.pixels);
+    reader.onOffsetChanged(_lastCharOffset);
   }
 
   void _onReaderChanged() {
@@ -191,14 +206,17 @@ class _ReaderScreenState extends State<ReaderScreen> with WidgetsBindingObserver
 
   void _restoreOffset() {
     final ReaderController? reader = _reader;
-    if (reader == null || !mounted || !_scroll.hasClients) return;
+    if (reader == null) return;
+    _jumpToChar(reader.restoreOffset);
+  }
+
+  /// 把第 [charOffset] 个字顶到视口顶端。
+  void _jumpToChar(int charOffset) {
+    final ChapterLayout? layout = _layout;
+    if (layout == null || !mounted || !_scroll.hasClients) return;
     final double max = _scroll.position.maxScrollExtent;
-    final double target = ReadingPosition.pixelsOf(
-      charOffset: reader.restoreOffset,
-      totalChars: reader.totalChars,
-      maxExtent: max,
-    );
-    _scroll.jumpTo(target > max ? max : target);
+    _scroll.jumpTo(layout.pixelsFor(charOffset).clamp(0.0, max));
+    _lastCharOffset = charOffset;
   }
 
   Future<void> _go(Future<void> Function() move) async {
@@ -299,7 +317,7 @@ class _ReaderScreenState extends State<ReaderScreen> with WidgetsBindingObserver
       );
     }
 
-    final List<String> paragraphs = reader.paragraphs;
+    final List<ChapterParagraph> paragraphs = reader.paragraphs;
     if (paragraphs.isEmpty) {
       return const Center(
         child: Padding(
@@ -315,24 +333,114 @@ class _ReaderScreenState extends State<ReaderScreen> with WidgetsBindingObserver
       );
     }
 
-    return SingleChildScrollView(
-      controller: _scroll,
-      padding: const EdgeInsets.fromLTRB(20, 16, 20, 40),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: <Widget>[
-          for (final String line in paragraphs)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 16),
-              child: Text(
-                line,
-                textAlign: TextAlign.justify,
-                style: const TextStyle(fontSize: 17, height: 1.7),
-              ),
+    return _chapterText(context, paragraphs);
+  }
+
+  /// 正文本体。
+  ///
+  /// `ListView.builder` 而不是 `SingleChildScrollView` 套 `Column`：后者把几千
+  /// 个段落一次性建出来，长章节上第一帧就是几百毫秒。
+  ///
+  /// 但光换成懒构建会把进度换算带坏 —— 没建出来的 item 没有高度，
+  /// `maxScrollExtent` 只能估，而估值会随着你往下滚一直变。所以这里**先量后建**：
+  /// [ChapterLayout] 把每段高度量出来喂给 `itemExtentBuilder`，
+  /// 滚动范围第一帧就是准的，字符 ↔ 像素也改成逐段插值。细节见 [ChapterLayout]。
+  Widget _chapterText(BuildContext context, List<ChapterParagraph> paragraphs) {
+    final TextScaler scaler = MediaQuery.textScalerOf(context);
+    final TextStyle style = _textStyle(context);
+    return LayoutBuilder(
+      builder: (BuildContext context, BoxConstraints constraints) {
+        final double width =
+            math.max(1.0, constraints.maxWidth - _sideMargin * 2);
+        final ChapterLayout layout = _layoutFor(
+          paragraphs: paragraphs,
+          style: style,
+          width: width,
+          scaler: scaler,
+        );
+        return ListView.builder(
+          controller: _scroll,
+          padding: const EdgeInsets.fromLTRB(
+            _sideMargin,
+            _topPadding,
+            _sideMargin,
+            _bottomPadding,
+          ),
+          itemCount: layout.length,
+          // 这一行就是懒构建和进度精度之间的那座桥：每段高度来自实测，
+          // 于是 sliver 不必建出 item 也知道整章有多高。
+          itemExtentBuilder: (int index, _) => layout.extentOf(index),
+          itemBuilder: (BuildContext context, int index) => Padding(
+            padding: const EdgeInsets.only(bottom: _paragraphSpacing),
+            child: Text(
+              layout.paragraphs[index].text,
+              textAlign: TextAlign.justify,
+              // 测量和渲染必须是同一套参数，差一点就会被定死的行高裁掉半行。
+              textScaler: scaler,
+              textHeightBehavior: const TextHeightBehavior(),
+              style: style,
             ),
-        ],
-      ),
+          ),
+        );
+      },
     );
+  }
+
+  /// 正文的字体。
+  ///
+  /// `inherit: false` 是必须的：继承的话实际样式是 `DefaultTextStyle` 合并出来
+  /// 的（字体族来自主题），而测量侧拿不到那份合并结果，量出来的高度就会和
+  /// 渲染出来的对不上。不继承 = 两边输入完全一样。
+  TextStyle _textStyle(BuildContext context) {
+    return TextStyle(
+      inherit: false,
+      // 不继承就没人给颜色了，这里要自己取。`onSurface` 就是 Material 给
+      // 正文的那个颜色，和改之前看起来一样。
+      color: Theme.of(context).colorScheme.onSurface,
+      fontSize: _fontSize,
+      height: _lineHeight,
+    );
+  }
+
+  /// 按「这一版正文 + 这套排版参数」缓存测量结果。
+  ///
+  /// 没有缓存的话每一帧都会把全章重量一遍 —— 那比原来的一次性构建还慢。
+  ChapterLayout _layoutFor({
+    required List<ChapterParagraph> paragraphs,
+    required TextStyle style,
+    required double width,
+    required TextScaler scaler,
+  }) {
+    final ReaderController reader = _reader!;
+    final _LayoutKey key = _LayoutKey(
+      revision: reader.revision,
+      width: width,
+      fontSize: style.fontSize ?? _fontSize,
+      lineHeight: style.height ?? _lineHeight,
+      scaler: scaler,
+    );
+    final ChapterLayout? cached = _layout;
+    if (cached != null && _layoutKey == key) return cached;
+    final ChapterLayout layout = ChapterLayout.measure(
+      paragraphs: paragraphs,
+      totalChars: reader.totalChars,
+      style: style,
+      maxWidth: width,
+      textScaler: scaler,
+      paragraphSpacing: _paragraphSpacing,
+      topPadding: _topPadding,
+      bottomPadding: _bottomPadding,
+    );
+    // 同一版正文重排（窗口宽度变了、以后还有字号）：同一段文字换了个位置，
+    // 把刚才读到的那个字重新顶回屏幕顶上。不然转个屏就得重新找读到哪。
+    final bool reflow = cached != null && _layoutKey?.revision == key.revision;
+    _layoutKey = key;
+    _layout = layout;
+    if (reflow) {
+      final int anchor = _lastCharOffset;
+      WidgetsBinding.instance.addPostFrameCallback((_) => _jumpToChar(anchor));
+    }
+    return layout;
   }
 
   Widget _pager(BuildContext context, ReaderController reader) {
@@ -359,6 +467,42 @@ class _ReaderScreenState extends State<ReaderScreen> with WidgetsBindingObserver
       ),
     );
   }
+}
+
+/// 「这份测量结果是为什么条件量的」。
+///
+/// 任何一项变了都得重量：正文换了（[revision]）、窗口宽了、字号或行距改了、
+/// 系统字体缩放变了。少放一项进来的表现是「改完设置版面没动」，
+/// 多放一项只是多量一次。
+@immutable
+class _LayoutKey {
+  const _LayoutKey({
+    required this.revision,
+    required this.width,
+    required this.fontSize,
+    required this.lineHeight,
+    required this.scaler,
+  });
+
+  final int revision;
+  final double width;
+  final double fontSize;
+  final double lineHeight;
+  final TextScaler scaler;
+
+  @override
+  bool operator ==(Object other) {
+    return other is _LayoutKey &&
+        other.revision == revision &&
+        other.width == width &&
+        other.fontSize == fontSize &&
+        other.lineHeight == lineHeight &&
+        other.scaler == scaler;
+  }
+
+  @override
+  int get hashCode =>
+      Object.hash(revision, width, fontSize, lineHeight, scaler);
 }
 
 /// 目录抽屉。
