@@ -81,3 +81,32 @@ jobs:
           name: apk-debug
           path: build/app/outputs/flutter-apk/app-debug.apk
           retention-days: 7
+
+  build-linux:
+    name: build linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      # Flutter 的 Linux 桌面构建走 CMake + GTK，runner 上默认没有这几样。
+      # 缺了的话报错是 CMake 阶段的找不到包，和 Dart 代码无关。
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config \
+            libgtk-3-dev liblzma-dev libstdc++-12-dev
+      - run: flutter pub get
+      - run: flutter build linux --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: build/linux/x64/release/bundle
+          retention-days: 7
+
+  # macOS / iOS 的工程文件已经在版本库里（由 scaffold.yml 生成），但**没有
+  # CI 验证**：它们要 macos runner，计费是 ubuntu 的 10 倍，而目前没有 Apple
+  # 设备上的实际需求。等真要发 iOS/macOS 包时再加，加之前它们算「生成了但
+  # 未经编译验证」—— 这一点要记得，别当成已验证的。
