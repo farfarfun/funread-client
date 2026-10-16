@@ -44,6 +44,19 @@ jobs:
           flutter create --platforms=${{ inputs.platforms }} \
             --org com.farfarfun --project-name funread_client .
 
+          # `flutter create` 不只补平台目录，**缺失的模板文件也会一起补上**，
+          # 其中 test/widget_test.dart 引用模板里的 MyApp —— 我们的根组件不叫
+          # 这个名，留着它 analyze 必然失败。只在确认是模板文件时删，免得哪天
+          # 真写了同名测试被误删。
+          if [ -f test/widget_test.dart ] && grep -q "MyApp" test/widget_test.dart; then
+            echo "删掉 flutter create 生成的模板测试"
+            rm test/widget_test.dart
+          fi
+
+      - name: 看看 create 到底动了什么
+        # 失败时这一步是唯一能说明「它又补了哪个没预料到的模板文件」的地方
+        run: git status --short
+
       - name: 生成锁文件
         if: ${{ inputs.update_lock }}
         run: |
