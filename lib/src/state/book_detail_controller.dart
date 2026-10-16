@@ -39,9 +39,8 @@ class BookDetailController extends ChangeNotifier {
   String? get tocError => _tocError;
   List<Chapter> get chapters => _chapters;
 
-  /// 书架里的那条记录。`null` 有两种原因：不在书架，或者没登录看不到书架。
+  /// 在不在书架。`false` 有两种原因：真的不在，或者没登录看不到书架。
   /// 对阅读链路来说这两者是一回事 —— 都读得了，只是存不了进度。
-  ShelfBook? get shelfBook => _shelfBook;
   bool get onShelf => _onShelf;
 
   /// 加入 / 移出书架在飞。按钮据此禁用。

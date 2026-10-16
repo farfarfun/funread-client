@@ -71,7 +71,6 @@ class ReaderController extends ChangeNotifier {
   bool _dirty = false;
 
   BookRef get ref => _ref;
-  BookInfo get info => _info;
   List<Chapter> get chapters => _chapters;
   int get position => _position;
   ChapterContent? get content => _content;

@@ -1,5 +1,4 @@
 import 'search.dart';
-import 'shelf.dart';
 
 /// 「从哪个源读哪本书」这组坐标。
 ///
@@ -26,18 +25,6 @@ class BookRef {
       bookKey: book.bookKey,
       urlId: source.urlId,
       bookUrl: source.bookUrl,
-      name: book.name,
-      author: book.author,
-    );
-  }
-
-  /// 从书架进来。`url_id` 可以是 null（手动加的书还没定源），
-  /// 这里退化成 0，由 [isUsable] 拦住。
-  factory BookRef.fromShelf(ShelfBook book) {
-    return BookRef(
-      bookKey: book.bookKey,
-      urlId: book.urlId ?? 0,
-      bookUrl: book.bookUrl,
       name: book.name,
       author: book.author,
     );
