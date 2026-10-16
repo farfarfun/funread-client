@@ -34,6 +34,9 @@ class _FunreadAppState extends State<FunreadApp> {
     // 冷启动探测是 fire-and-forget 的：结果通过 AuthController 的通知回来，
     // 不需要 await，也没有地方可以 await。
     unawaited(_services.auth.bootstrap());
+    // 排版设置同理。读不出来就是默认值，没有「正在加载设置」这个状态 ——
+    // 为了字号让首屏等一次磁盘 IO 不值得。
+    unawaited(_services.readerSettings.load());
   }
 
   @override

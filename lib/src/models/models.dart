@@ -8,6 +8,7 @@ export 'book_ref.dart';
 // asString / asInt 这些是模型自己的事，不该出现在调用方。
 export 'json.dart' show JsonMap, asList, asMap;
 export 'paragraph.dart';
+export 'reader_settings.dart';
 export 'search.dart';
 export 'session_state.dart';
 export 'shelf.dart';

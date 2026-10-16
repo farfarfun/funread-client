@@ -109,6 +109,10 @@ void main() {
     }
 
     expect(scroller(tester).position.maxScrollExtent, closeTo(before, 0.001));
+
+    // 滚动开了一个进度回写的节流窗口（3 秒）。让它到期再结束，
+    // 否则 flutter_test 在收尾时报「A Timer is still pending」。
+    await tester.pump(const Duration(seconds: 4));
   });
 
   testWidgets('续读落在存进度时的那一段上，而且那一段在屏幕最上面', (WidgetTester tester) async {

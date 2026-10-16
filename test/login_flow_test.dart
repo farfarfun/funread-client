@@ -4,10 +4,11 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:funread_client/src/api/funread_api.dart';
 import 'package:funread_client/src/app.dart';
 import 'package:funread_client/src/app_scope.dart';
-import 'package:funread_client/src/config/settings_store.dart';
 import 'package:funread_client/src/state/auth_controller.dart';
+import 'package:funread_client/src/state/reader_settings_controller.dart';
 
 import 'support/fake_adapter.dart';
+import 'support/memory_settings.dart';
 
 /// 启动闸门这条路的回归：冷启动探会话 → 落在登录页 → 登录成功换屏。
 ///
@@ -27,19 +28,6 @@ Future<void> drain(WidgetTester tester) async {
 
 /// 凭证层的空实现，顶掉会去问 path_provider 的那个。
 Future<void> noCredentials(Dio dio) async {}
-
-/// 偏好的内存实现，顶掉 shared_preferences。
-class MemorySettings implements SettingsStore {
-  String _base = 'http://nas.test:18811';
-
-  @override
-  Future<String> loadApiBase() async => _base;
-
-  @override
-  Future<void> saveApiBase(String value) async {
-    _base = value;
-  }
-}
 
 void main() {
   testWidgets('未登录时停在登录页，带着服务器地址输入框', (WidgetTester tester) async {
@@ -119,5 +107,8 @@ AppServices _services(FakeAdapter adapter) {
   return AppServices(
     api: api,
     auth: AuthController(api: api, settings: MemorySettings()),
+    // 排版设置也要走内存实现：真实的那个会去问 shared_preferences，
+    // 而平台通道在 widget 测试里不该被碰。
+    readerSettings: ReaderSettingsController(store: MemorySettings()),
   );
 }

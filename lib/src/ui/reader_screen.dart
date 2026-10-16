@@ -2,18 +2,21 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../app_scope.dart';
 import '../models/models.dart';
 import '../state/reader_controller.dart';
+import '../state/reader_settings_controller.dart';
 import 'chapter_layout.dart';
+import 'reader_palette.dart';
+import 'reader_settings_sheet.dart';
 
-/// 正文阅读页。
+/// 正文阅读页。滚动式，字号 / 行距 / 页边距 / 主题可调。
 ///
-/// 这一版是**可滚动的纯文本**，刻意不做分页排版、字号行距设置、夜间模式和
-/// 翻页手势。分页要先测量渲染后的文本高度，一旦字号可调就得反复重排，
-/// 那是另一个量级的工作量；先把「搜索 → 详情 → 目录 → 正文 → 进度」整条链
-/// 跑通，排版单独做。
+/// **不做分页排版（模拟翻书）。** 分页要先把渲染后的文本高度测出来再回切，
+/// 一旦字号可调就得反复重排；而滚动在触屏上本来就是原生手感，
+/// 在桌面上还能用滚轮和键盘。funread-web 也是同一个选择。
 class ReaderScreen extends StatefulWidget {
   const ReaderScreen({
     required this.bookRef,
@@ -62,13 +65,25 @@ class _ReaderScreenState extends State<ReaderScreen> with WidgetsBindingObserver
   /// 像素值在新版面里没有意义，字符偏移有。
   int _lastCharOffset = 0;
 
-  /// 正文排版。这一版是固定值，可调的设置在下一步。
-  static const double _fontSize = 17;
-  static const double _lineHeight = 1.7;
-  static const double _sideMargin = 20;
+  /// 排版设置。是 [AppScope] 上的长生命周期对象，这里只借用，不负责销毁。
+  ReaderSettingsController? _settings;
+
+  /// 正文和设置任何一个变了都要重建。合成一个存着而不是每次 build 现合 ——
+  /// 现合的话 `ListenableBuilder` 每一帧都要退订再订阅一遍。
+  Listenable? _repaint;
+
+  /// 上下留白不可调：它们是给刘海和手势条让的位置，不是审美。
   static const double _topPadding = 16;
-  static const double _bottomPadding = 40;
-  static const double _paragraphSpacing = 16;
+  static const double _bottomPadding = 48;
+
+  /// 一行最多排多少个字（按字号折算宽度）。
+  ///
+  /// 桌面上窗口有多宽正文就排多宽是不能读的 —— 一行七八十个汉字，
+  /// 眼睛跳回行首就找不到下一行。这个上限之外的空间留成两侧留白。
+  static const double _maxLineChars = 36;
+
+  /// 边缘翻章的触控带宽度（屏宽占比）。
+  static const double _edgeRatio = 0.25;
 
   @override
   void didChangeDependencies() {
@@ -83,7 +98,10 @@ class _ReaderScreenState extends State<ReaderScreen> with WidgetsBindingObserver
       charOffset: widget.charOffset,
       onShelf: widget.onShelf,
     );
+    final ReaderSettingsController settings = AppScope.of(context).readerSettings;
     _reader = reader;
+    _settings = settings;
+    _repaint = Listenable.merge(<Listenable>[reader, settings]);
     reader.addListener(_onReaderChanged);
     _scroll.addListener(_onScroll);
     WidgetsBinding.instance.addObserver(this);
@@ -220,22 +238,30 @@ class _ReaderScreenState extends State<ReaderScreen> with WidgetsBindingObserver
   }
 
   Future<void> _go(Future<void> Function() move) async {
+    final ReaderController reader = _reader!;
+    final int before = reader.position;
     await move();
-    if (!mounted || !_scroll.hasClients) return;
+    // 位置没变就别动滚动条：第一章点「上一章」、最后一章点「下一章」（以及
+    // 边缘手势误触）都会走到这里，把人弹回章首不是「没反应」，
+    // 是把他读到哪给弄丢了。
+    if (!mounted || !_scroll.hasClients || reader.position == before) return;
     // 新章从头开始。恢复逻辑会在正文到了之后再把位置摆正（翻章时是 0）。
     _scroll.jumpTo(0);
   }
 
   void _openToc() {
     final ReaderController reader = _reader!;
+    final ReaderPalette palette = ReaderPalette.of(_settings!.value.theme);
     unawaited(
       showModalBottomSheet<void>(
         context: context,
         isScrollControlled: true,
         showDragHandle: true,
+        backgroundColor: palette.background,
         builder: (BuildContext context) => _TocSheet(
           chapters: reader.chapters,
           current: reader.position,
+          palette: palette,
           onPick: (int position) {
             Navigator.of(context).pop();
             unawaited(_go(() => reader.goTo(position)));
@@ -245,45 +271,124 @@ class _ReaderScreenState extends State<ReaderScreen> with WidgetsBindingObserver
     );
   }
 
+  /// 排版设置面板。
+  void _openSettings() {
+    final ReaderSettingsController settings = _settings!;
+    unawaited(
+      showModalBottomSheet<void>(
+        context: context,
+        showDragHandle: true,
+        // 面板用当前阅读主题的底色：夜间模式下弹出一张白纸是会晃眼的。
+        backgroundColor: ReaderPalette.of(settings.value.theme).background,
+        builder: (BuildContext context) =>
+            ReaderSettingsSheet(controller: settings),
+      ),
+    );
+  }
+
+  /// 点屏幕左右两条边翻章。**只在触屏上**。
+  ///
+  /// 桌面上左右各 25% 是一条几百像素宽的死区（2560 的屏一侧就是 640），
+  /// 而且鼠标用户会把点击理解成选中文字 —— 想复制一句话结果跳了一章。
+  /// 桌面靠方向键和底部那两个按钮，funread-web 在这件事上踩过坑。
+  bool _edgeTapEnabled(BuildContext context) {
+    switch (Theme.of(context).platform) {
+      case TargetPlatform.android:
+      case TargetPlatform.iOS:
+      case TargetPlatform.fuchsia:
+        return true;
+      case TargetPlatform.linux:
+      case TargetPlatform.macOS:
+      case TargetPlatform.windows:
+        return false;
+    }
+  }
+
+  void _onTapUp(TapUpDetails details, double width) {
+    final ReaderController reader = _reader!;
+    final double x = details.localPosition.dx;
+    if (x < width * _edgeRatio) {
+      unawaited(_go(reader.prev));
+      return;
+    }
+    if (x > width * (1 - _edgeRatio)) {
+      unawaited(_go(reader.next));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final ReaderController reader = _reader!;
+    final ReaderSettingsController settings = _settings!;
     return ListenableBuilder(
-      listenable: reader,
+      listenable: _repaint!,
       builder: (BuildContext context, Widget? child) {
         final Chapter? chapter = reader.current;
         final ChapterContent? content = reader.content;
+        final ReaderSettings style = settings.value;
+        final ReaderPalette palette = ReaderPalette.of(style.theme);
         // 标题优先用正文页抓到的那个：目录里的章节名常常带着源站自己的前后缀。
         final String title = content != null && content.title.isNotEmpty
             ? content.title
             : (chapter?.name ?? widget.info.name);
-        return Scaffold(
-          appBar: AppBar(
-            title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
-            actions: <Widget>[
-              IconButton(
-                tooltip: '目录',
-                onPressed: reader.chapters.isEmpty ? null : _openToc,
-                icon: const Icon(Icons.list),
+        return CallbackShortcuts(
+          // 桌面上这是**主要**翻章方式：那里没有边缘手势。
+          bindings: <ShortcutActivator, VoidCallback>{
+            const SingleActivator(LogicalKeyboardKey.arrowLeft): () =>
+                unawaited(_go(reader.prev)),
+            const SingleActivator(LogicalKeyboardKey.arrowRight): () =>
+                unawaited(_go(reader.next)),
+            // 上下 / PageUp / PageDown 不拦：滚动式阅读里浏览器和
+            // Scrollable 自己的默认行为就是对的。
+          },
+          child: Focus(
+            autofocus: true,
+            child: Scaffold(
+              backgroundColor: palette.background,
+              appBar: AppBar(
+                backgroundColor: palette.background,
+                foregroundColor: palette.text,
+                // 不要 M3 的 scrolledUnder 着色：正文滚到标题栏下面时
+                // 染一层主题色，和阅读底色就对不上了。
+                scrolledUnderElevation: 0,
+                title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
+                actions: <Widget>[
+                  IconButton(
+                    tooltip: '排版',
+                    onPressed: _openSettings,
+                    icon: const Icon(Icons.text_fields),
+                  ),
+                  IconButton(
+                    tooltip: '目录',
+                    onPressed: reader.chapters.isEmpty ? null : _openToc,
+                    icon: const Icon(Icons.list),
+                  ),
+                ],
               ),
-            ],
+              body: _body(context, reader, style, palette),
+              bottomNavigationBar: _pager(context, reader, palette),
+            ),
           ),
-          body: _body(context, reader),
-          bottomNavigationBar: _pager(context, reader),
         );
       },
     );
   }
 
-  Widget _body(BuildContext context, ReaderController reader) {
+  Widget _body(
+    BuildContext context,
+    ReaderController reader,
+    ReaderSettings settings,
+    ReaderPalette palette,
+  ) {
+    // 提示文字也要跟着阅读主题走：夜间底色配默认的深色字就是「深底深字」。
     if (reader.loading) {
-      return const Center(
+      return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
-            CircularProgressIndicator(),
-            SizedBox(height: 16),
-            Text('正在抓取正文…'),
+            const CircularProgressIndicator(),
+            const SizedBox(height: 16),
+            Text('正在抓取正文…', style: TextStyle(color: palette.muted)),
           ],
         ),
       );
@@ -296,18 +401,18 @@ class _ReaderScreenState extends State<ReaderScreen> with WidgetsBindingObserver
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: <Widget>[
-              Icon(Icons.error_outline,
-                  size: 36, color: Theme.of(context).disabledColor),
+              Icon(Icons.error_outline, size: 36, color: palette.muted),
               const SizedBox(height: 12),
-              const Text('读不到这一章'),
+              Text('读不到这一章', style: TextStyle(color: palette.text)),
               const SizedBox(height: 8),
               Text(
                 error,
                 textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.bodySmall,
+                style: TextStyle(color: palette.muted, fontSize: 12),
               ),
               const SizedBox(height: 12),
               OutlinedButton(
+                style: OutlinedButton.styleFrom(foregroundColor: palette.text),
                 onPressed: () => unawaited(reader.load()),
                 child: const Text('重试'),
               ),
@@ -319,21 +424,22 @@ class _ReaderScreenState extends State<ReaderScreen> with WidgetsBindingObserver
 
     final List<ChapterParagraph> paragraphs = reader.paragraphs;
     if (paragraphs.isEmpty) {
-      return const Center(
+      return Center(
         child: Padding(
-          padding: EdgeInsets.all(24),
+          padding: const EdgeInsets.all(24),
           // 空正文不报错是后端的常态：规则没匹配到就是空串。说清楚，
           // 否则用户以为是客户端没渲染出来。
           child: Text(
             '这一章是空的。\n\n多半是这个源的正文规则没匹配上，而不是章节本身没有内容。'
             '返回详情页换一个源通常能读到。',
             textAlign: TextAlign.center,
+            style: TextStyle(color: palette.muted),
           ),
         ),
       );
     }
 
-    return _chapterText(context, paragraphs);
+    return _chapterText(context, paragraphs, settings, palette);
   }
 
   /// 正文本体。
@@ -345,40 +451,57 @@ class _ReaderScreenState extends State<ReaderScreen> with WidgetsBindingObserver
   /// `maxScrollExtent` 只能估，而估值会随着你往下滚一直变。所以这里**先量后建**：
   /// [ChapterLayout] 把每段高度量出来喂给 `itemExtentBuilder`，
   /// 滚动范围第一帧就是准的，字符 ↔ 像素也改成逐段插值。细节见 [ChapterLayout]。
-  Widget _chapterText(BuildContext context, List<ChapterParagraph> paragraphs) {
+  Widget _chapterText(
+    BuildContext context,
+    List<ChapterParagraph> paragraphs,
+    ReaderSettings settings,
+    ReaderPalette palette,
+  ) {
     final TextScaler scaler = MediaQuery.textScalerOf(context);
-    final TextStyle style = _textStyle(context);
+    final TextStyle style = _textStyle(settings, palette);
+    final double spacing = settings.paragraphSpacing;
+    final bool edgeTap = _edgeTapEnabled(context);
     return LayoutBuilder(
       builder: (BuildContext context, BoxConstraints constraints) {
-        final double width =
-            math.max(1.0, constraints.maxWidth - _sideMargin * 2);
+        final double available = constraints.maxWidth;
+        // 一行排多少字有上限，多出来的宽度摊成两侧留白。页边距是**下限**：
+        // 窄屏上它说了算，宽屏上居中的那条正文列说了算。
+        final double column = math.min(
+          available - settings.pageMargin * 2,
+          settings.fontSize * _maxLineChars,
+        );
+        final double side =
+            math.max(settings.pageMargin, (available - column) / 2);
+        final double width = math.max(1.0, available - side * 2);
         final ChapterLayout layout = _layoutFor(
           paragraphs: paragraphs,
           style: style,
           width: width,
+          spacing: spacing,
           scaler: scaler,
         );
-        return ListView.builder(
-          controller: _scroll,
-          padding: const EdgeInsets.fromLTRB(
-            _sideMargin,
-            _topPadding,
-            _sideMargin,
-            _bottomPadding,
-          ),
-          itemCount: layout.length,
-          // 这一行就是懒构建和进度精度之间的那座桥：每段高度来自实测，
-          // 于是 sliver 不必建出 item 也知道整章有多高。
-          itemExtentBuilder: (int index, _) => layout.extentOf(index),
-          itemBuilder: (BuildContext context, int index) => Padding(
-            padding: const EdgeInsets.only(bottom: _paragraphSpacing),
-            child: Text(
-              layout.paragraphs[index].text,
-              textAlign: TextAlign.justify,
-              // 测量和渲染必须是同一套参数，差一点就会被定死的行高裁掉半行。
-              textScaler: scaler,
-              textHeightBehavior: const TextHeightBehavior(),
-              style: style,
+        return GestureDetector(
+          // translucent：正文本身不吃点击，但整片区域都要能收到。
+          behavior: HitTestBehavior.translucent,
+          onTapUp:
+              edgeTap ? (TapUpDetails d) => _onTapUp(d, available) : null,
+          child: ListView.builder(
+            controller: _scroll,
+            padding: EdgeInsets.fromLTRB(side, _topPadding, side, _bottomPadding),
+            itemCount: layout.length,
+            // 这一行就是懒构建和进度精度之间的那座桥：每段高度来自实测，
+            // 于是 sliver 不必建出 item 也知道整章有多高。
+            itemExtentBuilder: (int index, _) => layout.extentOf(index),
+            itemBuilder: (BuildContext context, int index) => Padding(
+              padding: EdgeInsets.only(bottom: spacing),
+              child: Text(
+                layout.paragraphs[index].text,
+                textAlign: TextAlign.justify,
+                // 测量和渲染必须是同一套参数，差一点就会被定死的行高裁掉半行。
+                textScaler: scaler,
+                textHeightBehavior: const TextHeightBehavior(),
+                style: style,
+              ),
             ),
           ),
         );
@@ -391,14 +514,13 @@ class _ReaderScreenState extends State<ReaderScreen> with WidgetsBindingObserver
   /// `inherit: false` 是必须的：继承的话实际样式是 `DefaultTextStyle` 合并出来
   /// 的（字体族来自主题），而测量侧拿不到那份合并结果，量出来的高度就会和
   /// 渲染出来的对不上。不继承 = 两边输入完全一样。
-  TextStyle _textStyle(BuildContext context) {
+  TextStyle _textStyle(ReaderSettings settings, ReaderPalette palette) {
     return TextStyle(
       inherit: false,
-      // 不继承就没人给颜色了，这里要自己取。`onSurface` 就是 Material 给
-      // 正文的那个颜色，和改之前看起来一样。
-      color: Theme.of(context).colorScheme.onSurface,
-      fontSize: _fontSize,
-      height: _lineHeight,
+      // 不继承就没人给颜色了，这里要自己给。
+      color: palette.text,
+      fontSize: settings.fontSize,
+      height: settings.lineHeight,
     );
   }
 
@@ -409,14 +531,16 @@ class _ReaderScreenState extends State<ReaderScreen> with WidgetsBindingObserver
     required List<ChapterParagraph> paragraphs,
     required TextStyle style,
     required double width,
+    required double spacing,
     required TextScaler scaler,
   }) {
     final ReaderController reader = _reader!;
     final _LayoutKey key = _LayoutKey(
       revision: reader.revision,
       width: width,
-      fontSize: style.fontSize ?? _fontSize,
-      lineHeight: style.height ?? _lineHeight,
+      fontSize: style.fontSize ?? ReaderSettings.defaultFontSize,
+      lineHeight: style.height ?? ReaderSettings.defaultLineHeight,
+      spacing: spacing,
       scaler: scaler,
     );
     final ChapterLayout? cached = _layout;
@@ -427,12 +551,13 @@ class _ReaderScreenState extends State<ReaderScreen> with WidgetsBindingObserver
       style: style,
       maxWidth: width,
       textScaler: scaler,
-      paragraphSpacing: _paragraphSpacing,
+      paragraphSpacing: spacing,
       topPadding: _topPadding,
       bottomPadding: _bottomPadding,
     );
-    // 同一版正文重排（窗口宽度变了、以后还有字号）：同一段文字换了个位置，
-    // 把刚才读到的那个字重新顶回屏幕顶上。不然转个屏就得重新找读到哪。
+    // 同一版正文重排（改了字号 / 行距 / 边距，或者转了屏）：同一段文字换了个
+    // 位置，把刚才读到的那个字重新顶回屏幕顶上。不然调一下字号就得重新找
+    // 自己读到哪 —— 这是「设置可调」最容易让人恼火的地方。
     final bool reflow = cached != null && _layoutKey?.revision == key.revision;
     _layoutKey = key;
     _layout = layout;
@@ -443,26 +568,45 @@ class _ReaderScreenState extends State<ReaderScreen> with WidgetsBindingObserver
     return layout;
   }
 
-  Widget _pager(BuildContext context, ReaderController reader) {
-    return SafeArea(
-      child: SizedBox(
-        height: 48,
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: <Widget>[
-            TextButton(
-              onPressed: reader.hasPrev ? () => unawaited(_go(reader.prev)) : null,
-              child: const Text('上一章'),
-            ),
-            Text(
-              '${reader.position + 1} / ${reader.chapters.length}',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-            TextButton(
-              onPressed: reader.hasNext ? () => unawaited(_go(reader.next)) : null,
-              child: const Text('下一章'),
-            ),
-          ],
+  /// 底部翻章条。
+  ///
+  /// 桌面上它和方向键是仅有的两个翻章入口（那里没有边缘手势），
+  /// 所以它常驻，不随工具栏隐藏。
+  Widget _pager(
+    BuildContext context,
+    ReaderController reader,
+    ReaderPalette palette,
+  ) {
+    final ButtonStyle buttonStyle = TextButton.styleFrom(
+      foregroundColor: palette.text,
+      disabledForegroundColor: palette.muted.withValues(alpha: 0.5),
+    );
+    return Material(
+      color: palette.background,
+      child: SafeArea(
+        child: SizedBox(
+          height: 48,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: <Widget>[
+              TextButton(
+                style: buttonStyle,
+                onPressed:
+                    reader.hasPrev ? () => unawaited(_go(reader.prev)) : null,
+                child: const Text('上一章'),
+              ),
+              Text(
+                '${reader.position + 1} / ${reader.chapters.length}',
+                style: TextStyle(color: palette.muted, fontSize: 12),
+              ),
+              TextButton(
+                style: buttonStyle,
+                onPressed:
+                    reader.hasNext ? () => unawaited(_go(reader.next)) : null,
+                child: const Text('下一章'),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -481,6 +625,7 @@ class _LayoutKey {
     required this.width,
     required this.fontSize,
     required this.lineHeight,
+    required this.spacing,
     required this.scaler,
   });
 
@@ -488,6 +633,7 @@ class _LayoutKey {
   final double width;
   final double fontSize;
   final double lineHeight;
+  final double spacing;
   final TextScaler scaler;
 
   @override
@@ -497,12 +643,13 @@ class _LayoutKey {
         other.width == width &&
         other.fontSize == fontSize &&
         other.lineHeight == lineHeight &&
+        other.spacing == spacing &&
         other.scaler == scaler;
   }
 
   @override
   int get hashCode =>
-      Object.hash(revision, width, fontSize, lineHeight, scaler);
+      Object.hash(revision, width, fontSize, lineHeight, spacing, scaler);
 }
 
 /// 目录抽屉。
@@ -512,11 +659,15 @@ class _TocSheet extends StatefulWidget {
   const _TocSheet({
     required this.chapters,
     required this.current,
+    required this.palette,
     required this.onPick,
   });
 
   final List<Chapter> chapters;
   final int current;
+
+  /// 目录也跟着阅读主题走：夜里翻目录弹出一张白纸同样晃眼。
+  final ReaderPalette palette;
   final ValueChanged<int> onPick;
 
   @override
@@ -549,19 +700,27 @@ class _TocSheetState extends State<_TocSheet> {
         itemCount: widget.chapters.length,
         itemBuilder: (BuildContext context, int index) {
           final bool reading = index == widget.current;
+          final ReaderPalette palette = widget.palette;
           return ListTile(
             dense: true,
-            leading:
-                Text('${index + 1}', style: Theme.of(context).textTheme.bodySmall),
+            leading: Text(
+              '${index + 1}',
+              style: TextStyle(color: palette.muted, fontSize: 12),
+            ),
             title: Text(
               widget.chapters[index].name,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: reading
-                  ? TextStyle(color: Theme.of(context).colorScheme.primary)
-                  : null,
+              style: TextStyle(
+                color: reading
+                    ? Theme.of(context).colorScheme.primary
+                    : palette.text,
+              ),
             ),
-            trailing: reading ? const Icon(Icons.play_arrow, size: 16) : null,
+            trailing: reading
+                ? Icon(Icons.play_arrow,
+                    size: 16, color: Theme.of(context).colorScheme.primary)
+                : null,
             onTap: () => widget.onPick(index),
           );
         },
